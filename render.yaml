@@ -1,0 +1,39 @@
+# Render "Blueprint": runs the Sociax backend (FastAPI) from the backend/ folder.
+# Secret values are NOT written here: Render asks for them (or you type them in the Render dashboard).
+services:
+  - type: web
+    name: sociax-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # Firebase service-account file: add it in Render > Environment > Secret Files with exactly this name.
+      - key: GOOGLE_APPLICATION_CREDENTIALS
+        value: /etc/secrets/firebase-service-account.json
+      - key: CLOUDINARY_CLOUD_NAME
+        value: blquould
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5-5
+      - key: XAI_MODEL
+        value: grok-4.6
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: FREE_AI_REQUESTS
+        value: "10"
+      - key: CHAPA_SECRET_KEY   # TEST key only
+        sync: false

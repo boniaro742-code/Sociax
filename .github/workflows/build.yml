@@ -1,0 +1,167 @@
+name: Sociax Android APK Build
+
+# ONE workflow only. Do not add a second APK workflow (see Sociax_GitHub_Structure_and_Plan.md).
+# Runs on every push to main/master, or press "Run workflow" in the Actions tab.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sociax-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # The APK. This job does NOT wait for the backend checks below: a problem there never blocks it.
+  # ---------------------------------------------------------------------------------------------
+  build:
+    name: Build Sociax APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Check project files
+        run: |
+          echo "Repository root:"
+          pwd
+          ls -la
+          missing=0
+          for f in gradlew settings.gradle.kts build.gradle.kts app/build.gradle.kts gradle/wrapper/gradle-wrapper.properties; do
+            if [ ! -f "./$f" ]; then
+              echo "::error title=Missing file::$f is missing from the repository root. Upload the CONTENTS of the Sociax folder (app, backend, gradle, gradlew, settings.gradle.kts, .github ...), not the Sociax folder itself."
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ] || exit 1
+          chmod +x ./gradlew
+
+      # The real gradle-wrapper.jar cannot be produced without Gradle. If it is not committed yet,
+      # generate it here with the Gradle 8.9 installed above. If this fails, ./gradlew still works
+      # (its launcher falls back to the installed Gradle 8.9).
+      - name: Make sure the Gradle wrapper jar exists
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::warning title=gradle-wrapper.jar not committed::Generating it for this run. To fix it for good, run 'gradle wrapper --gradle-version 8.9' once and commit gradle/wrapper/gradle-wrapper.jar."
+            gradle wrapper --gradle-version 8.9 --no-daemon || echo "::warning::Wrapper generation failed; using the ./gradlew fallback launcher."
+            chmod +x ./gradlew
+          fi
+
+      # The GitHub runner already has Android SDK 34; this only makes sure (harmless if already there).
+      - name: Make sure Android SDK 34 is installed
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
+          fi
+
+      - name: Check the backend address
+        env:
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL }}
+        run: |
+          if [ -z "$SOCIAX_API_URL" ]; then
+            echo "::warning title=SOCIAX_API_URL is not set::The APK will try http://10.0.2.2:8000 (only works in the Android emulator). For a real phone set it: GitHub > Settings > Secrets and variables > Actions > Variables > SOCIAX_API_URL = your Render address (https://...onrender.com)."
+          else
+            echo "APK will talk to: $SOCIAX_API_URL"
+          fi
+
+      - name: Build debug APK
+        shell: bash
+        env:
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL }}
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      # Only when the build failed: put the real error at the top of the run page, so it is easy to copy.
+      - name: Show the build errors (copy these lines)
+        if: failure()
+        shell: bash
+        run: |
+          if [ ! -f build.log ]; then
+            echo "The Gradle build did not start. Open the red step above and copy its error." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## The APK build failed. First errors:"
+            echo '```'
+            grep -E '^e: |What went wrong|Execution failed|Could not |AAPT|error:|Unresolved|Duplicate' -A2 build.log | head -60
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E '^e: ' build.log | head -10 | while IFS= read -r line; do echo "::error title=Kotlin error::${line}"; done
+          exit 0
+
+      - name: Upload the full build log (only if the build failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sociax-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Show the SHA-1 (add it in Firebase for Google sign-in)
+        run: keytool -list -v -keystore sociax-debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1|SHA256"
+
+      - name: Name the APK with its version
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/Sociax-v${VERSION}.apk"
+          ls -la dist
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sociax-Android-APK
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------------------------
+  # The backend checks (real FastAPI / pydantic). Shows a red mark when a check fails, but the
+  # whole run stays green so the APK above is always delivered.
+  # ---------------------------------------------------------------------------------------------
+  backend-checks:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r backend/requirements.txt
+
+      - name: Run every backend check
+        working-directory: backend
+        env:
+          DEV_AUTH: "1"
+        run: |
+          failed=0
+          for t in test_*.py; do
+            echo "=== $t"
+            python "$t" || failed=1
+          done
+          exit $failed

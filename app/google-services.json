@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "615669124507",
+    "firebase_url": "https://sociax-fb925-default-rtdb.firebaseio.com",
+    "project_id": "sociax-fb925",
+    "storage_bucket": "sociax-fb925.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:615669124507:android:b9c94ed5afe6657e6ea53e",
+        "android_client_info": {
+          "package_name": "com.sociax.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "615669124507-bm8ib0m4eg276ffmhmmsa4pfedtf56o5.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAVllq3vf3FhyNbaE0tg3-XDYNuY8GHNQs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "615669124507-bm8ib0m4eg276ffmhmmsa4pfedtf56o5.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
