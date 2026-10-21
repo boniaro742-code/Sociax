@@ -83,12 +83,12 @@ private fun JSONObject.toMe() = Me(
 /** Talks to the Sociax FastAPI backend. Every call sends the Firebase ID token. */
 class ApiClient(private val tokenProvider: suspend () -> String?) {
 
-    private val http = OkHttpClient()
+    private val http = OkHttpClient.Builder().connectTimeout(90, TimeUnit.SECONDS).readTimeout(90, TimeUnit.SECONDS).writeTimeout(90, TimeUnit.SECONDS).build()
     // Videos are bigger than photos: allow longer reads/writes for the Cloudinary upload only.
     private val uploadHttp = http.newBuilder()
         .writeTimeout(180, TimeUnit.SECONDS).readTimeout(180, TimeUnit.SECONDS).build()
     // AI answers can take a while: longer read timeout for /ai/ask only.
-    private val aiHttp = http.newBuilder().readTimeout(70, TimeUnit.SECONDS).build()
+    private val aiHttp = http.newBuilder().readTimeout(120, TimeUnit.SECONDS).build()
     private val json = "application/json".toMediaType()
 
     private suspend fun call(method: String, path: String, body: JSONObject? = null, client: OkHttpClient = http): JSONObject =
