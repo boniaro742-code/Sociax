@@ -138,10 +138,11 @@ assert good.status_code == 200 and bad.status_code == 400
 assert b"<script>" not in bad.body and b"alert" not in bad.body and b"Sociax" in good.body
 ok("/auth/callback: success page, failure page, no echo, never 404")
 
-# ---- 9. a video whose length is not known yet is asked for again (and a truly unreadable one is refused, not published) ------
+# ---- 9. a video whose length is not known yet is asked for again (plan v3.9.1: if it stays unknown, the clip is still published) --
 m.kick_cloud_cleanup = lambda: None
 m.destroy_video = lambda pid: None
 m.DURATION_RETRY_WAIT = 0
+m.DURATION_BACKFILL_DELAYS = ()
 answers = [{"bytes": 1000, "format": "mp4"}, {"bytes": 1000, "format": "mp4", "duration": 0}, {"bytes": 1000, "duration": 8.5, "format": "mp4"}]
 asked = []
 
@@ -156,9 +157,10 @@ s = m.create_short(m.NewShort(public_id=f"users/{A}/short_late"), A)
 assert s["duration"] == 8.5 and len(asked) == 3
 asked.clear()
 m.video_info = lambda pid: (asked.append(pid), {"bytes": 1000, "format": "mp4"})[1]
-e = err(m.create_short, m.NewShort(public_id=f"users/{A}/short_never"), A)
-assert e.status_code == 422 and len(asked) == 1 + m.DURATION_RETRIES
+s = m.create_short(m.NewShort(public_id=f"users/{A}/short_never"), A)
+assert len(asked) == 1 + m.DURATION_RETRIES and s["duration"] is None          # asked again, still unknown -> published with "unknown"
 with closing(m.db()) as con:
-    assert con.execute("SELECT COUNT(*) FROM shorts WHERE media_public_id LIKE '%short_never'").fetchone()[0] == 0
-ok("unknown length: asked again; still unknown -> refused with 422, nothing published")
+    row = con.execute("SELECT duration FROM shorts WHERE media_public_id LIKE '%short_never'").fetchone()
+    assert row is not None and row[0] is None                                   # stored as NULL, never 0
+ok("unknown length: asked again; still unknown -> published, length stored as unknown (plan v3.9.1)")
 print("test_reliability: all checks passed")

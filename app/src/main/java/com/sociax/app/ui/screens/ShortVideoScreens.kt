@@ -33,8 +33,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -541,7 +539,7 @@ private fun ShortPlayer(url: String, playing: Boolean, modifier: Modifier = Modi
     }
 }
 
-/** Plays a local clip (optionally only start..end) in a loop: used for trimming and the pre-publish preview. */
+/** Plays a local clip (optionally only start..end) in a loop: used for the pre-publish preview. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 private fun ClipPreview(uri: Uri, startMs: Long, endMs: Long?, modifier: Modifier = Modifier) {
@@ -559,23 +557,25 @@ private fun ClipPreview(uri: Uri, startMs: Long, endMs: Long?, modifier: Modifie
 }
 
 // =====================================================================
-// Create a short: pick / record -> (trim if too long) -> compress -> preview -> publish
+// Create a short: pick / record -> compress -> preview -> publish
+// Plan v3.9.1: there is NO duration limit and the length is never required. The video is never trimmed or shortened
+// by the app; the only checks are file size, file type, login and the daily media quota (all on the server).
 // =====================================================================
-private enum class CStage { Pick, Trim, Working, Preview, Uploading }
+private enum class CStage { Pick, Working, Preview, Uploading }
 
-private class CaptureShort : ActivityResultContract<Pair<Uri, Int>, Boolean>() {
-    override fun createIntent(context: Context, input: Pair<Uri, Int>): Intent =
+private class CaptureShort : ActivityResultContract<Uri, Boolean>() {
+    override fun createIntent(context: Context, input: Uri): Intent =
         Intent(MediaStore.ACTION_VIDEO_CAPTURE)
-            .putExtra(MediaStore.EXTRA_OUTPUT, input.first)
-            .putExtra(MediaStore.EXTRA_DURATION_LIMIT, input.second)   // asks the camera app to stop at the chosen length
+            .putExtra(MediaStore.EXTRA_OUTPUT, input)                   // no EXTRA_DURATION_LIMIT: the camera records as long as the person wants
             .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
     override fun parseResult(resultCode: Int, intent: Intent?) = resultCode == Activity.RESULT_OK
 }
 
-/** Plan v3.2: the longest short video (seconds). The server checks the real file again. */
-private const val MAX_SHORT_SECONDS = 60
-
-private fun mmss(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
+/** h:mm:ss from one hour on, m:ss below. Only used to DISPLAY a length that was read; an unknown length shows nothing. */
+private fun mmss(ms: Long): String {
+    val s = ms / 1000
+    return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+}
 
 @Composable
 fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, defaultFollowersOnly: Boolean = false) {
@@ -584,18 +584,13 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
     val prefs = remember { Prefs(context) }
 
     var stage by remember { mutableStateOf(CStage.Pick) }
-    val limitSec = MAX_SHORT_SECONDS                                  // plan v3.2: up to 1 minute; longer clips must be trimmed by the user
-    var source by remember { mutableStateOf<Uri?>(null) }
-    var durationMs by remember { mutableLongStateOf(0L) }
-    var startMs by remember { mutableLongStateOf(0L) }
-    var appliedStart by remember { mutableLongStateOf(0L) }
     var prepared by remember { mutableStateOf<File?>(null) }
-    var preparedMs by remember { mutableLongStateOf(0L) }
+    var preparedMs by remember { mutableLongStateOf(0L) }            // 0 = length unknown (display only, never sent and never a limit)
     var caption by remember { mutableStateOf("") }
     var followersOnly by remember { mutableStateOf(defaultFollowersOnly) }
     var commentsOn by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
-    val errPrepare = tr("err_prepare"); val errRead = tr("err_read_video"); val errReadTry = tr("err_read_video_try"); val errTooLongFmt = tr("err_too_long")
+    val errRead = tr("err_read_video")
     var pendingCamera by remember { mutableStateOf<Uri?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
     // Step 35: a clip already uploaded to Cloudinary (prepared file path -> public id): "try again" re-sends only the record
@@ -604,45 +599,30 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
     DisposableEffect(Unit) { onDispose { prepared?.delete() } }
 
     fun launchStep(block: suspend () -> Unit) { job?.cancel(); job = scope.launch { block() } }
-    val limitMs = limitSec * 1000L
 
-    /** Cuts (if needed) and compresses the video, then shows the preview. */
-    suspend fun prepare(uri: Uri, start: Long, end: Long?) {
+    /** Compresses the whole video (never cuts it), then shows the preview. */
+    suspend fun prepare(uri: Uri) {
         stage = CStage.Working; error = null
-        val trimmed = start > 0 || end != null
         prepared?.delete(); prepared = null
         try {
-            prepared = exportShort(context, uri, start, end, prefs.uploadQuality)
+            prepared = exportShort(context, uri, 0L, null, prefs.uploadQuality)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (trimmed) { error = errPrepare; stage = CStage.Pick; return }
-            // short enough already: use the original if compressing is not possible on this phone
-            try { prepared = copyVideoToCache(context, uri) } catch (e2: Exception) {
+            // compressing is not possible on this phone / for this file: publish the original, unchanged
+            try { prepared = copyVideoToCache(context, uri) } catch (e2: CancellationException) { throw e2 } catch (e2: Exception) {
                 error = errRead; stage = CStage.Pick; return
             }
         }
         val f = prepared!!
-        preparedMs = withContext(Dispatchers.IO) { videoDurationMs(context, Uri.fromFile(f)) }
-        if (preparedMs <= 0 || preparedMs > limitMs + 500) {     // never let a longer clip reach the upload step
-            f.delete(); prepared = null
-            error = String.format(errTooLongFmt, limitSec)
-            stage = if (durationMs > limitMs) CStage.Trim else CStage.Pick
-            return
-        }
+        // Plan v3.9.1: the length is OPTIONAL. It is read only to show it in the preview; if it cannot be read, nothing is blocked,
+        // nothing is invented (0 = unknown) and the problem is only written to the log (VideoUtils).
+        preparedMs = withContext(Dispatchers.IO) { try { videoDurationMs(context, Uri.fromFile(f)) } catch (e: Exception) { 0L } }.coerceAtLeast(0L)
         stage = CStage.Preview
     }
 
-    fun onPicked(uri: Uri) = launchStep {
-        error = null; stage = CStage.Working
-        // Step 36 (plan v3.6 section 2): five ways to read the length (see VideoUtils); only when ALL fail the clip is refused,
-        // with a clear message (the reason is in the log). A video is never refused just because one reader failed.
-        val d = videoDurationAny(context, uri)
-        if (d <= 0) { error = errReadTry; stage = CStage.Pick; return@launchStep }
-        source = uri; durationMs = d; startMs = 0; appliedStart = 0
-        if (d > limitMs + 300) stage = CStage.Trim            // longer than allowed: the user MUST trim it
-        else prepare(uri, 0, if (d > limitMs) limitMs else null)
-    }
+    // Plan v3.9.1: picking a video does NOT read its length first (that read used to block publishing: "Could not read the video length").
+    fun onPicked(uri: Uri) = launchStep { prepare(uri) }
 
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { u -> if (u != null) onPicked(u) }
     val camera = rememberLauncherForActivityResult(remember { CaptureShort() }) { ok ->
@@ -656,13 +636,13 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
             stage = CStage.Uploading; error = null
             try {
                 val publicId = uploadedClip?.takeIf { it.first == f.absolutePath }?.second ?: run {
-                    val sig = api.signUpload("short", f.length().toInt())
+                    val sig = api.signUpload("short", f.length().coerceAtMost(Int.MAX_VALUE.toLong()).toInt())   // no wrap-around for a huge file: the server then says "too big"
                     api.uploadVideoToCloudinary(sig, f)
                     uploadedClip = f.absolutePath to sig.publicId
                     sig.publicId
                 }
                 // "Published" only after the server saved the clip record (onPosted runs after createShort returns)
-                api.createShort(publicId, caption.trim(), if (followersOnly) "followers" else "public", commentsOn, limitSec)
+                api.createShort(publicId, caption.trim(), if (followersOnly) "followers" else "public", commentsOn)
                 uploadedClip = null
                 onPosted()
             } catch (e: CancellationException) {
@@ -694,7 +674,7 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                         Icon(Icons.Filled.VideoLibrary, null, tint = Teal, modifier = Modifier.size(52.dp))
                         Spacer(Modifier.height(10.dp))
                         Text(tr("choose_record"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                        Text(trf("max_len_note", limitSec),
+                        Text(tr("max_len_note"),
                             color = Color.White.copy(.65f), fontSize = 12.sp)
                     }
                 }
@@ -709,39 +689,11 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                     val f = File(dir, "rec_${System.currentTimeMillis()}.mp4")
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
                     pendingCamera = uri
-                    camera.launch(uri to limitSec)
+                    camera.launch(uri)
                 }, Modifier.fillMaxWidth(), filled = false)
                 error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
                 Spacer(Modifier.height(10.dp))
                 Text(trf("quality_line", when (prefs.uploadQuality) { "low" -> tr("ql_low"); "high" -> tr("ql_high"); else -> tr("ql_std") }), color = Color.White.copy(.55f), fontSize = 12.sp)
-            }
-
-            CStage.Trim -> {
-                val src = source
-                val maxStart = (durationMs - limitMs).coerceAtLeast(1L)
-                Text(trf("trim_note", mmss(durationMs), limitSec),
-                    color = Color.White, fontSize = 14.sp)
-                Spacer(Modifier.height(12.dp))
-                GlassPanel(Modifier.fillMaxWidth().height(380.dp), corner = 28) {
-                    if (src != null) ClipPreview(src, appliedStart, appliedStart + limitMs, Modifier.fillMaxSize())
-                }
-                Spacer(Modifier.height(8.dp))
-                Slider(
-                    value = startMs.toFloat().coerceIn(0f, maxStart.toFloat()),
-                    onValueChange = { startMs = it.toLong() },
-                    onValueChangeFinished = { appliedStart = startMs },
-                    valueRange = 0f..maxStart.toFloat(),
-                    colors = SliderDefaults.colors(thumbColor = Teal, activeTrackColor = Teal)
-                )
-                Text(trf("keeping", mmss(startMs), mmss(startMs + limitMs)), color = Teal, fontWeight = FontWeight.SemiBold)
-                error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
-                Spacer(Modifier.height(14.dp))
-                PillButton(tr("trim_continue"), {
-                    val u = source ?: return@PillButton
-                    launchStep { prepare(u, startMs, startMs + limitMs) }
-                }, Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                PillButton(tr("choose_another"), { stage = CStage.Pick }, Modifier.fillMaxWidth(), filled = false)
             }
 
             CStage.Working, CStage.Uploading -> {
@@ -762,7 +714,9 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                 GlassPanel(Modifier.fillMaxWidth().height(380.dp), corner = 28) {
                     if (f != null) ClipPreview(Uri.fromFile(f), 0, null, Modifier.fillMaxSize())
                 }
-                if (f != null) Text("${"%.1f".format(preparedMs / 1000.0)} s · ${"%.1f".format(f.length() / 1048576.0)} MB",
+                if (f != null) Text(
+                    // an unknown length is simply not shown (plan v3.9.1: never a made-up 0:00)
+                    (if (preparedMs > 0) "${mmss(preparedMs)} · " else "") + "${"%.1f".format(f.length() / 1048576.0)} MB",
                     color = Color.White.copy(.65f), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
                 Spacer(Modifier.height(12.dp))
                 GlassField(caption, { caption = it.take(2200) }, tr("write_caption"))

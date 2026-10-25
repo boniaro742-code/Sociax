@@ -75,11 +75,15 @@ def interest(points: float) -> float:
     return 100.0 * p / (p + INTEREST_K)
 
 
-def watch_ratio(event: str, value_ms: int | None, duration_s: float) -> float | None:
-    """One event -> how much of the clip was enjoyed (0..1), normalised for the clip's length. None = says nothing."""
-    dur_ms = max(duration_s, 0.001) * 1000.0
+def watch_ratio(event: str, value_ms: int | None, duration_s: float | None) -> float | None:
+    """One event -> how much of the clip was enjoyed (0..1), normalised for the clip's length. None = says nothing.
+    Plan v3.9.1: a clip's length can be unknown (None). A 'complete' event still counts, but a watched / skipped
+    fraction cannot be computed without a length, so those events say nothing (no length is ever invented)."""
     if event == "complete":
         return 1.0
+    if duration_s is None or duration_s <= 0:
+        return None
+    dur_ms = duration_s * 1000.0
     if event == "watch":
         return min(1.0, (value_ms or 0) / dur_ms) if value_ms else None
     if event == "skip":

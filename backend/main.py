@@ -27,7 +27,7 @@ import ranker  # Step 39: For You scoring (pure code)
 import rank_engine  # Step 48: optional Go ranking engine (backend-go/); Python ranks by itself when it is off or fails
 import metrics  # Step 47: how long requests take / how often they fail (route patterns only)
 
-API_VERSION = "0.57.0"
+API_VERSION = "0.58.0"
 app = FastAPI(title="Sociax API", version=API_VERSION)
 
 # Cloudinary credentials: server-side only (env vars). The Android app never sees the secret.
@@ -40,7 +40,10 @@ POST_MAX_BYTES = 10 * 1024 * 1024
 SHORT_MAX_BYTES = 100 * 1024 * 1024
 DURATION_RETRIES = 2                   # Step 36: Cloudinary may need a moment before it reports a new video's length
 DURATION_RETRY_WAIT = 1.0
-DURATION_TOLERANCE = 0.5               # video containers round durations slightly; anything above 60.5 s is refused
+# Step 53 (plan v3.9.1): there is NO duration limit for a short video, and an unreadable length never blocks publishing.
+# When Cloudinary has not reported the length yet, the clip is saved with duration = NULL ("unknown", never 0) and a small
+# background job asks Cloudinary again after these delays (seconds). Tests set it to () so no thread is started.
+DURATION_BACKFILL_DELAYS = (15, 60, 180)
 
 _rate: dict = {}
 
@@ -98,7 +101,8 @@ def ai_limit_error(reset_in_seconds: int) -> HTTPException:
 
 
 # ---- Plan constants (v3.3: ONE paid plan, Sociax Pro, US $15 / month) ----
-MAX_SHORT_SECONDS = 60                 # plan v3.2: Short Video up to 1 minute (was 25 s)
+# Step 53 (plan v3.9.1): the fixed Short Video duration cap (25 s, then 60 s) is gone. Size, file type, login, the daily
+# media quota and Cloudinary's own limits are checked on their own (see SHORT_MAX_BYTES above).
 MIN_AGE = 15
 MB = 1024 * 1024                       # ONE conversion everywhere: 1 MB = 1024 * 1024 bytes, 1 GB = 1024 MB
 FREE_MEDIA_MB = 500                    # Free: 500 MB per DAY (posts, photos, videos, files combined)
@@ -133,6 +137,34 @@ def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
+
+
+def _make_short_duration_nullable(con) -> bool:
+    """Step 53 (plan v3.9.1): older databases created `shorts.duration` as NOT NULL, so a clip whose length is unknown could
+    not be saved. SQLite cannot drop a NOT NULL, so the table is rebuilt ONCE inside one transaction (all rows, ids and the
+    id counter are kept, the index is made again). A database that is already fine is not touched. Returns True if it rebuilt."""
+    con.commit()
+    con.execute("BEGIN IMMEDIATE")                      # a second worker waits here; it re-checks below and finds nothing to do
+    try:
+        row = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='shorts'").fetchone()
+        pattern = re.compile(r"duration\s+REAL\s+NOT\s+NULL", re.I)
+        if not row or not pattern.search(row["sql"]):
+            con.rollback()
+            return False
+        ddl = pattern.sub("duration REAL", row["sql"], count=1)
+        seq = con.execute("SELECT seq FROM sqlite_sequence WHERE name='shorts'").fetchone()
+        con.execute("ALTER TABLE shorts RENAME TO shorts_old")
+        con.execute(ddl)
+        con.execute("INSERT INTO shorts SELECT * FROM shorts_old")      # same column order: the new table is the old one minus NOT NULL
+        con.execute("DROP TABLE shorts_old")                            # also drops the old index
+        con.execute("CREATE INDEX IF NOT EXISTS shorts_uid ON shorts(uid, id)")
+        if seq:                                                         # never hand out an id that was used before
+            con.execute("UPDATE sqlite_sequence SET seq=MAX(seq, ?) WHERE name='shorts'", (seq["seq"],))
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        raise
 
 
 def init_db():
@@ -212,7 +244,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS shorts(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 uid TEXT NOT NULL, caption TEXT NOT NULL DEFAULT '',
-                media_public_id TEXT NOT NULL, duration REAL NOT NULL,
+                media_public_id TEXT NOT NULL, duration REAL,                -- NULL = length unknown (plan v3.9.1)
                 audience TEXT NOT NULL DEFAULT 'public',     -- 'public' | 'followers'
                 comments_enabled INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL);
@@ -297,6 +329,7 @@ def init_db():
                 queued_at INTEGER NOT NULL,
                 tries INTEGER NOT NULL DEFAULT 0)"""
         )
+        _make_short_duration_nullable(con)     # Step 53 (plan v3.9.1): an existing database must also accept "length unknown"
         # Step 35 (plan v3.6/v3.9): every post / short has a moderation state. 'ok' = normal; anything else ('restricted',
         # 'removed') hides it from everybody except its owner. A moderator tool can set it later; the feed already obeys it.
         for table in ("posts", "shorts"):
@@ -1065,15 +1098,14 @@ def onboard(body: Onboarding, uid: str = Depends(current_user)):
 
 
 class ShortMeta(BaseModel):
-    duration_seconds: float
+    duration_seconds: float | None = None      # plan v3.9.1: optional; the phone may not be able to read it, and it is never a limit
     size_mb: float
     mime: str
 
 
 @app.post("/media/validate-short")
 def validate_short(meta: ShortMeta, uid: str = Depends(current_user)):
-    if meta.duration_seconds > MAX_SHORT_SECONDS:
-        raise HTTPException(422, f"Clip longer than {MAX_SHORT_SECONDS}s: trim it first")
+    # plan v3.9.1: NO duration check here. Type, size and the daily quota are still checked, each on its own.
     if not meta.mime.startswith("video/"):
         raise HTTPException(415, "Unsupported file type")
     if meta.size_mb * 1024 * 1024 > SHORT_MAX_BYTES:
@@ -1817,7 +1849,7 @@ class NewShort(BaseModel):
     caption: str = Field(default="", max_length=2200)
     audience: Literal["public", "followers"] = "public"
     comments_enabled: bool = True
-    chosen_seconds: int = Field(default=60, ge=1, le=60)   # plan v3.2: the maximum is 60 s (older apps send 20 / 25: still accepted)
+    chosen_seconds: int | None = None   # OLD apps still send 20 / 25 / 60; since plan v3.9.1 the value is accepted and ignored
 
 
 @app.post("/shorts")
@@ -1836,15 +1868,17 @@ def create_short(body: NewShort, uid: str = Depends(current_user)):
         time.sleep(DURATION_RETRY_WAIT)
         info = video_info(body.public_id)
     size = int(info.get("bytes", 0))
-    duration = float(info.get("duration") or 0)
+    # plan v3.9.1: the length is OPTIONAL information. Unknown is stored as NULL, never as 0 and never as a guess,
+    # and it is never a reason to refuse a clip. Size, type, login and the daily quota below are still checked.
+    try:
+        seconds = float(info.get("duration") or 0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    duration = seconds if seconds > 0 and seconds != float("inf") else None
     fmt = str(info.get("format", "")).lower()
     reject = None
     if size <= 0 or size > SHORT_MAX_BYTES:
         reject = (413, f"Video must be under {SHORT_MAX_BYTES // (1024 * 1024)} MB")
-    elif duration <= 0:
-        reject = (422, "Could not read the video length")
-    elif duration > body.chosen_seconds + DURATION_TOLERANCE or duration > MAX_SHORT_SECONDS + DURATION_TOLERANCE:
-        reject = (422, f"Clip is longer than {body.chosen_seconds} seconds. Trim it first.")
     elif fmt not in {"mp4", "mov", "webm", "3gp", "mkv"}:
         reject = (415, "Unsupported video type")
     if reject:
@@ -1869,7 +1903,40 @@ def create_short(body: NewShort, uid: str = Depends(current_user)):
             (uid, body.caption.strip(), body.public_id, duration, body.audience, int(body.comments_enabled), int(time.time())))
         con.commit()
         row = con.execute(f"{SHORT_SELECT} WHERE p.id=:id", {"me": uid, "id": cur.lastrowid}).fetchone()
+    if duration is None:
+        _start_duration_backfill(cur.lastrowid, body.public_id)
     return short_dict(row, uid)
+
+
+def _backfill_duration_once(short_id: int, public_id: str) -> bool:
+    """Asks Cloudinary for the length of a published clip whose length was unknown. True when it is known now (or the clip
+    is gone). Any failure just means 'try later': it never touches the post itself."""
+    try:
+        seconds = float(video_info(public_id).get("duration") or 0)
+    except Exception:
+        return False
+    if seconds <= 0 or seconds == float("inf"):
+        return False
+    with closing(db()) as con:
+        con.execute("UPDATE shorts SET duration=? WHERE id=? AND duration IS NULL", (seconds, short_id))
+        con.commit()
+    return True
+
+
+def _start_duration_backfill(short_id: int, public_id: str):
+    """Plan v3.9.1: if the length was not known at publish time, fill it in later from trusted Cloudinary metadata.
+    Runs in a small background thread; failure leaves the length unknown and the post fully valid."""
+    delays = tuple(DURATION_BACKFILL_DELAYS)
+    if not delays:
+        return
+
+    def run():
+        for wait in delays:
+            time.sleep(wait)
+            if _backfill_duration_once(short_id, public_id):
+                return
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 @app.get("/shorts/feed")
@@ -2129,7 +2196,7 @@ def record_interaction(body: InteractionEvent, uid: str = Depends(current_user))
         if body.event == "watch" and not v:
             return {"ok": True, "recorded": False, "reason": "empty_watch"}
         if body.content_type == "short" and v is not None and body.event in ("watch", "complete", "skip"):
-            if v > row["duration"] * 1000 * WATCH_MAX_LOOPS + WATCH_SLACK_MS:
+            if row["duration"] and v > row["duration"] * 1000 * WATCH_MAX_LOOPS + WATCH_SLACK_MS:   # unknown length (NULL): nothing to compare with
                 return {"ok": True, "recorded": False, "reason": "impossible"}    # ignored, not an error: the phone must not retry it
         purge_old_events(con)
         cur = con.execute(

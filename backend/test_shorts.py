@@ -6,6 +6,8 @@ import os, tempfile, time
 os.environ["DEV_AUTH"] = "1"
 os.environ["SOCIAX_DB"] = os.path.join(tempfile.mkdtemp(), "t.db")
 import main as m  # noqa: E402
+m.DURATION_RETRY_WAIT = 0   # no waiting for a length that will not come
+m.DURATION_BACKFILL_DELAYS = ()   # no background thread in tests (test_unknown_duration.py covers it)
 m.FREE_MEDIA_MB = 150     # a smaller DAILY allowance keeps this test fast (the real free value is 500 MB per day)
 from fastapi import HTTPException  # noqa: E402
 
@@ -64,15 +66,15 @@ def test_all():
     assert code(m.sign_upload, m.SignRequest(purpose="short", size_bytes=101 * MB), A) == 413
     assert m.sign_upload(m.SignRequest(purpose="post", size_bytes=MB), A)["allowed_formats"].startswith("jpg")
 
-    # --- duration rules (plan v3.2: hard maximum 60 s) ---
+    # --- duration rules (plan v3.9.1: NO duration limit; an unreadable length never blocks publishing) ---
     assert publish(A, 1, 59.9)["duration"] == 59.9
-    assert publish(A, 2, 60.4)["id"]                                     # container rounding tolerance
-    assert code(publish, A, 3, 60.6) == 422 and f"users/{A}/short_3" in DESTROYED   # too long: refused AND deleted
-    assert code(publish, A, 4, 90.0) == 422
-    assert publish(A, 6, 40.0)["id"]                                     # 25 s is no longer the limit
-    assert code(publish, A, 13, 22.0, chosen_seconds=20) == 422           # an older app that still sends 20: its own limit is honoured
+    assert publish(A, 2, 60.4)["id"]                                     # no 60 s cap any more
+    assert code(publish, A, 3, 60.6) == 200 and f"users/{A}/short_3" not in DESTROYED   # longer than a minute: published, not deleted
+    assert publish(A, 4, 90.0)["duration"] == 90.0
+    assert publish(A, 6, 40.0)["id"]
+    assert publish(A, 13, 22.0, chosen_seconds=20)["id"]                # an older app that still sends 20: the value is ignored now
     assert publish(A, 14, 19.9, chosen_seconds=20)["id"]
-    assert code(publish, A, 7, 0.0) == 422                                # unreadable length
+    assert publish(A, 7, 0.0)["duration"] is None                       # unreadable length: published, stored as unknown (NOT 0)
     assert code(publish, A, 8, 10.0, fmt="avi") == 415
     assert code(publish, A, 9, 10.0, size=101 * MB) == 413
     # not your upload / path tricks / duplicate
@@ -84,9 +86,10 @@ def test_all():
     assert code(m.create_short, m.NewShort(public_id=f"users/{A}/short_1"), A) == 200
     assert len(ids(A)) == n_before
     assert code(m.create_short, m.NewShort(public_id=f"users/{A}/short_nope"), A) == 422
-    # media-validate (advisory) also refuses > 60 s, and accepts 26 s
-    assert code(m.validate_short, m.ShortMeta(duration_seconds=61, size_mb=5, mime="video/mp4"), A) == 422
-    assert m.validate_short(m.ShortMeta(duration_seconds=26, size_mb=5, mime="video/mp4"), A)["ok"]
+    # media-validate (advisory): no duration limit, duration optional; type and size are still checked
+    assert m.validate_short(m.ShortMeta(duration_seconds=3600, size_mb=5, mime="video/mp4"), A)["ok"]
+    assert m.validate_short(m.ShortMeta(size_mb=5, mime="video/mp4"), A)["ok"]
+    assert code(m.validate_short, m.ShortMeta(size_mb=5, mime="image/png"), A) == 415
 
     # --- quota (daily allowance, here 150 MB, counted on the server) ---
     assert code(publish, A, 10, 10.0, size=99 * MB) == 200               # A now ~ 99+5*3 MB

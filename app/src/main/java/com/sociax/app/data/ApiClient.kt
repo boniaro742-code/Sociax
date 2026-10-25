@@ -418,10 +418,11 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
         }
     }
 
-    suspend fun createShort(publicId: String, caption: String, audience: String, commentsEnabled: Boolean, chosenSeconds: Int): ShortVideo =
+    /** Plan v3.9.1: no length is sent and none is required; the server reads the real size / type from Cloudinary and the length only if it can. */
+    suspend fun createShort(publicId: String, caption: String, audience: String, commentsEnabled: Boolean): ShortVideo =
         call("POST", "/shorts", JSONObject().apply {
             put("public_id", publicId); put("caption", caption); put("audience", audience)
-            put("comments_enabled", commentsEnabled); put("chosen_seconds", chosenSeconds)
+            put("comments_enabled", commentsEnabled)
         }).toShortVideo()
 
     suspend fun shortsFeed(before: Long? = null): List<ShortVideo> =

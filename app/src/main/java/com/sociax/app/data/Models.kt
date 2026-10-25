@@ -37,7 +37,7 @@ data class ShortVideo(
     val videoUrl: String?,
     val videoUrlLow: String?,   // smaller 480p copy, used when Data Saver is on
     val posterUrl: String?,
-    val duration: Double,
+    val duration: Double?,       // seconds; null = unknown (plan v3.9.1: never a made-up 0)
     val audience: String,
     val commentsEnabled: Boolean,
     val createdAt: Long,
@@ -131,7 +131,7 @@ fun JSONObject.toPost() = Post(
 fun JSONObject.toShortVideo() = ShortVideo(
     id = getLong("id"), username = getString("username"), displayName = optString("display_name"),
     avatarUrl = str("avatar_url"), caption = optString("caption"), videoUrl = str("video_url"),
-    videoUrlLow = str("video_url_low"), posterUrl = str("poster_url"), duration = optDouble("duration", 0.0),
+    videoUrlLow = str("video_url_low"), posterUrl = str("poster_url"), duration = if (has("duration") && !isNull("duration")) optDouble("duration").takeIf { it > 0 } else null,
     audience = optString("audience", "public"), commentsEnabled = optBoolean("comments_enabled", true),
     createdAt = getLong("created_at"), likeCount = optInt("like_count"), commentCount = optInt("comment_count"),
     liked = optBoolean("liked"), followStatus = optString("follow_status", "none"),

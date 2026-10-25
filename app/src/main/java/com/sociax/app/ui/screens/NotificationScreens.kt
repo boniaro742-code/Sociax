@@ -92,11 +92,9 @@ private fun PushSwitch(api: ApiClient) {
             busy = false
         }
     }
-        
-    val permissionNeededText = tr("push_permission_needed")
+    val permissionNeeded = tr("push_permission_needed")      // tr() is @Composable: read it HERE, not inside the result callback
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) turnOn() else { on = false; msg = permissionNeededText }
-    
+        if (granted) turnOn() else { on = false; msg = permissionNeeded }
     }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp)) {
