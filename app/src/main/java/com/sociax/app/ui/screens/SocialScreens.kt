@@ -44,7 +44,7 @@ internal fun errText(e: Exception) =
 @Composable
 internal fun TopBar(title: String, onBack: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        GlassIconButton(Icons.Filled.ArrowBack, "Back", onBack)
+        GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack)
         Spacer(Modifier.width(12.dp))
         Text(title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
     }
@@ -60,6 +60,9 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
     var followersOnly by remember { mutableStateOf(defaultFollowersOnly) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Step 35: a photo that is already on Cloudinary is remembered, so "try again" after a failed save sends only the post record
+    // (no second upload, no orphan file). The server also treats a repeated request for the same upload as the same post.
+    var uploaded by remember { mutableStateOf<Pair<Uri, String>?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri = it ?: uri }
     val errPick = tr("err_choose_photo")
@@ -67,7 +70,7 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         TopBar(tr("new_post"), onBack)
         GlassPanel(Modifier.fillMaxWidth().height(320.dp), corner = 28) {
-            if (uri != null) AsyncImage(uri, "Selected photo", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            if (uri != null) AsyncImage(uri, tr("a11y_selected_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Icon(Icons.Filled.AddPhotoAlternate, null, tint = Teal, modifier = Modifier.size(48.dp))
                 Spacer(Modifier.height(8.dp))
@@ -94,12 +97,22 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
             scope.launch {
                 busy = true; error = null
                 try {
-                    val bytes = loadJpeg(context, chosen, 1440)
-                    val sig = api.signUpload("post", bytes.size)
-                    api.uploadToCloudinary(sig, bytes)
-                    api.createPost(sig.publicId, caption.trim(), if (followersOnly) "followers" else "public")
+                    val publicId = uploaded?.takeIf { it.first == chosen }?.second ?: run {
+                        val bytes = loadJpeg(context, chosen, 1440)
+                        val sig = api.signUpload("post", bytes.size)
+                        api.uploadToCloudinary(sig, bytes)
+                        uploaded = chosen to sig.publicId
+                        sig.publicId
+                    }
+                    // "Published" is shown only after the SERVER confirmed the post record (onPosted runs after createPost returns)
+                    api.createPost(publicId, caption.trim(), if (followersOnly) "followers" else "public")
+                    uploaded = null
                     onPosted()
-                } catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    // a permanent refusal (not a weak network, not a full daily allowance) means the file is gone: upload again next time
+                    if (e is ApiException && e.code in 400..499 && e.reason != "media_full" && e.code != 429) uploaded = null
+                    error = errText(e)
+                }
                 busy = false
             }
         }, Modifier.fillMaxWidth())
@@ -171,7 +184,7 @@ fun CommentsScaffold(
                         focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
                         focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                 )
-                GlassIconButton(Icons.Filled.Send, "Send", {
+                GlassIconButton(Icons.Filled.Send, tr("a11y_send"), {
                     val t = text.trim()
                     if (t.isEmpty()) return@GlassIconButton
                     scope.launch {
@@ -192,19 +205,40 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
     var users by remember { mutableStateOf<List<UserHit>>(emptyList()) }
     val posts = remember { mutableStateListOf<Post>() }
     var shortHits by remember { mutableStateOf<List<ShortVideo>>(emptyList()) }      // Step 26: public short videos
+    var next by remember { mutableStateOf(SearchNext()) }                               // Step 45: where each list continues (null = no more)
+    var shownQuery by remember { mutableStateOf("") }                                    // the text the CURRENT results are for
+    var moreBusy by remember { mutableStateOf(false) }
     var watching by remember { mutableStateOf<ShortVideo?>(null) }
     var loading by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     val ctl = remember { PostController(api, scope, posts) { notice = it } }
     val dataSaver = Prefs(LocalContext.current).dataSaver
 
+    // Step 45: the next page of ONE list; what is already shown is never added twice (LazyColumn keys must be unique).
+    fun loadMore(type: String, off: Int) {
+        if (moreBusy || shownQuery.isEmpty()) return
+        moreBusy = true
+        scope.launch {
+            try {
+                val r = api.searchMore(shownQuery, type, off)
+                when (type) {
+                    "users" -> { users = (users + r.users).distinctBy { it.username }; next = next.copy(users = r.next.users) }
+                    "posts" -> { val have = posts.map { it.id }.toSet(); posts.addAll(r.posts.filter { it.id !in have }); next = next.copy(posts = r.next.posts) }
+                    else -> { shortHits = (shortHits + r.shorts).distinctBy { it.id }; next = next.copy(shorts = r.next.shorts) }
+                }
+                notice = null
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { notice = errText(e) }
+            moreBusy = false
+        }
+    }
+
     LaunchedEffect(query) {
-        if (query.trim().length < 2) { users = emptyList(); posts.clear(); shortHits = emptyList(); notice = null; return@LaunchedEffect }
+        if (query.trim().length < 2) { users = emptyList(); posts.clear(); shortHits = emptyList(); next = SearchNext(); shownQuery = ""; notice = null; return@LaunchedEffect }
         delay(300) // wait until the person stops typing
         loading = true
         try {
             val r = api.searchAll(query.trim())
-            users = r.users; posts.clear(); posts.addAll(r.posts); shortHits = r.shorts; notice = null
+            users = r.users; posts.clear(); posts.addAll(r.posts); shortHits = r.shorts; next = r.next; shownQuery = query.trim(); notice = null
         } catch (e: CancellationException) { throw e } catch (e: Exception) { notice = errText(e) }
         loading = false
     }
@@ -221,7 +255,7 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { TopBar(tr("search"), onBack) }
-        item { GlassField(query, { query = it }, tr("search_all_hint")) }
+        item { GlassField(query, { query = it.take(50) }, tr("search_all_hint")) }      // Step 45: the server accepts 50 characters at most
         notice?.let { item { Text(it, color = Color(0xFFFFB4A8), fontSize = 13.sp) } }
         if (loading) item { CircularProgressIndicator(color = Teal) }
         if (!loading && query.trim().length >= 2 && users.isEmpty() && posts.isEmpty() && shortHits.isEmpty() && notice == null)
@@ -248,8 +282,10 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
                 }
             }
         }
+        next.users?.let { off -> item(key = "more_users") { LoadMoreButton(moreBusy) { loadMore("users", off) } } }
         if (posts.isNotEmpty()) item { Text(tr("posts"), color = Teal, fontWeight = FontWeight.Bold) }
         items(posts, key = { "p" + it.id }) { PostCard(it, ctl, onComments) }
+        next.posts?.let { off -> item(key = "more_posts") { LoadMoreButton(moreBusy) { loadMore("posts", off) } } }
         if (shortHits.isNotEmpty()) item { Text(tr("short_videos"), color = Teal, fontWeight = FontWeight.Bold) }
         items(shortHits.chunked(3), key = { row -> "s" + row.first().id }) { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -265,6 +301,14 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
                 repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
+        next.shorts?.let { off -> item(key = "more_shorts") { LoadMoreButton(moreBusy) { loadMore("shorts", off) } } }
+    }
+}
+
+@Composable
+private fun LoadMoreButton(busy: Boolean, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        if (busy) CircularProgressIndicator(color = Teal) else PillButton(tr("load_more"), onClick, filled = false)
     }
 }
 

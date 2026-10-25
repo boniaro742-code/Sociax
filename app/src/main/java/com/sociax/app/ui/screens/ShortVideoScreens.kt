@@ -69,14 +69,51 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** One ad page of the Short Video feed (Step 41). */
+class AdSlot(val id: Long, val afterVideoId: Long, val ad: LoadedAd)
+
+/** A page of the Short Video pager: an ordinary video or an ad. */
+sealed interface FeedSlot {
+    val key: String
+    class Video(val item: ShortVideo) : FeedSlot { override val key = "v${item.id}" }
+    class Ad(val slot: AdSlot) : FeedSlot { override val key = "a${slot.id}" }
+}
+
 /** Holds the Short Video feed so it survives opening comments / creating a video and coming back. */
 class ShortsState {
     val items = mutableStateListOf<ShortVideo>()
     var loaded by mutableStateOf(false)
     var endReached by mutableStateOf(false)
     var page by mutableIntStateOf(0)
+    var cursor: String? = null      // Step 40: where the ranked For You list continues (null = start)
+    var ranked = true               // false = the server answered newest-first, so paging continues with "before"
 
-    fun reset() { items.clear(); loaded = false; endReached = false; page = 0 }
+    // Step 41 (plan v3.8 section 28): ad pages between ordinary videos. An ad page sits right AFTER the video it is anchored to.
+    val adSlots = mutableStateListOf<AdSlot>()
+    val seenSinceAd = HashSet<Long>()   // ordinary videos looked at since the last ad page (never two ad pages in a row)
+    var nextGap = 3                     // how many ordinary videos before the next ad (3 or 4, varied)
+    private var adCounter = 0L
+
+    fun reset() { items.clear(); loaded = false; endReached = false; page = 0; cursor = null; ranked = true; clearAds() }
+
+    /** The pages of the pager in order: video, video, video, [ad], video ... Ads whose anchor video is gone are ignored. */
+    fun slots(): List<FeedSlot> = buildList {
+        for (v in items) {
+            add(FeedSlot.Video(v))
+            adSlots.firstOrNull { it.afterVideoId == v.id }?.let { add(FeedSlot.Ad(it)) }
+        }
+    }
+
+    fun addAd(afterVideoId: Long, ad: LoadedAd) { adSlots.add(AdSlot(++adCounter, afterVideoId, ad)) }
+
+    fun clearAds() { adSlots.forEach { it.ad.ad.destroy() }; adSlots.clear(); seenSinceAd.clear(); nextGap = 3 }
+
+    /** Ads are no longer allowed (Pro, cap reached): remove the ad pages the person has not seen yet. [keepAfter] = the one on screen. */
+    fun dropUnseenAds(keepAfter: Long?) {
+        val gone = adSlots.filter { !it.ad.impressed && it.afterVideoId != keepAfter }
+        gone.forEach { it.ad.ad.destroy() }
+        adSlots.removeAll(gone.toSet())
+    }
 
     fun replace(id: Long, f: (ShortVideo) -> ShortVideo) {
         val i = items.indexOfFirst { it.id == id }
@@ -92,10 +129,11 @@ private fun msg(e: Exception) =
 // =====================================================================
 @Composable
 fun ShortVideoScreen(
-    api: ApiClient, state: ShortsState, onCreate: () -> Unit, onComments: (ShortVideo) -> Unit,
+    api: ApiClient, state: ShortsState, ads: AdsController, onCreate: () -> Unit, onComments: (ShortVideo) -> Unit,
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
     val prefs = remember { Prefs(context) }
     var loading by remember { mutableStateOf(false) }
@@ -106,9 +144,17 @@ fun ShortVideoScreen(
         if (loading || state.endReached) return
         loading = true
         try {
-            val page = api.shortsFeed(state.items.lastOrNull()?.id)
-            state.items.addAll(page.filter { n -> state.items.none { it.id == n.id } })
-            if (page.size < 10) state.endReached = true
+            if (state.ranked) {
+                val r = api.shortsForYou(state.cursor)
+                state.cursor = r.nextCursor
+                if (!r.ranked) state.ranked = false
+                state.items.addAll(r.items.filter { n -> state.items.none { it.id == n.id } })
+                if (if (r.ranked) r.nextCursor == null else r.items.size < 10) state.endReached = true
+            } else {
+                val page = api.shortsFeed(state.items.lastOrNull()?.id)
+                state.items.addAll(page.filter { n -> state.items.none { it.id == n.id } })
+                if (page.size < 10) state.endReached = true
+            }
             state.loaded = true; notice = null
         } catch (e: CancellationException) {
             throw e
@@ -119,6 +165,17 @@ fun ShortVideoScreen(
     }
 
     LaunchedEffect(state.loaded) { if (!state.loaded) loadMore() }
+
+    // Step 41: the SERVER decides whether this account may see ads (Free, cap not reached). Unknown = no ads. Pro = the SDK never starts.
+    // MainActivity asks it each time this tab is on screen; here it is asked again when the app comes back to the front.
+    val lifeOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifeOwner) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_RESUME && ads.statusIsStale()) scope.launch { ads.refresh(activity) }
+        }
+        lifeOwner.lifecycle.addObserver(obs)
+        onDispose { lifeOwner.lifecycle.removeObserver(obs) }
+    }
 
     fun toggleLike(s: ShortVideo) {
         val on = !s.liked
@@ -182,6 +239,21 @@ fun ShortVideoScreen(
         }
     }
 
+    // Step 40: "Not interested" / "Hide creator" (plan v3.9 section 31.2). The video leaves the list at once.
+    fun notInterested(s: ShortVideo) {
+        scope.launch {
+            try { api.recFeedback("not_interested", "short", s.id); state.items.removeAll { it.id == s.id } }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { notice = msg(e) }
+        }
+    }
+
+    fun hideCreator(s: ShortVideo) {
+        scope.launch {
+            try { api.recFeedback("hide_creator", "short", s.id); state.items.removeAll { it.username == s.username } }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { notice = msg(e) }
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(CinematicBackground)) {
         if (state.items.isEmpty()) {
             Column(
@@ -197,29 +269,82 @@ fun ShortVideoScreen(
                 }
             }
         } else {
-            val pager = rememberPagerState(initialPage = state.page.coerceIn(0, state.items.size - 1)) { state.items.size }
+            val pager = rememberPagerState(
+                initialPage = state.page.coerceIn(0, (state.slots().size - 1).coerceAtLeast(0))
+            ) { state.slots().size }
             LaunchedEffect(pager.currentPage) {
                 state.page = pager.currentPage
-                if (pager.currentPage >= state.items.size - 3) loadMore()
+                val slots = state.slots()
+                val here = slots.getOrNull(pager.currentPage)
+                val videoId = when (here) { is FeedSlot.Video -> here.item.id; is FeedSlot.Ad -> here.slot.afterVideoId; null -> null }
+                val vIdx = state.items.indexOfFirst { it.id == videoId }
+                if (vIdx < 0 || vIdx >= state.items.size - 3) loadMore()
+
+                // Step 41: an ad page only AFTER about 3 ordinary videos (3 or 4, varied), never two in a row, never as the last page,
+                // and only when the server said Free + under the daily cap and an ad is really loaded. No ad -> the feed just continues.
+                if (here is FeedSlot.Video) {
+                    state.seenSinceAd.add(here.item.id)
+                    val nextIsAd = slots.getOrNull(pager.currentPage + 1) is FeedSlot.Ad
+                    val hasNextVideo = vIdx in 0 until state.items.size - 1
+                    if (state.seenSinceAd.size >= state.nextGap && !nextIsAd && hasNextVideo && ads.allowed) {
+                        if (ads.statusIsStale()) ads.refresh(activity)          // re-check Free / cap with the server before placing
+                        val loaded = if (ads.allowed) ads.take() else null
+                        if (loaded != null) {
+                            state.addAd(here.item.id, loaded)
+                            state.seenSinceAd.clear()
+                            val st = ads.status
+                            val lo = st?.everyMin ?: 3
+                            val hi = maxOf(st?.everyMax ?: 4, lo)
+                            state.nextGap = kotlin.random.Random.nextInt(lo, hi + 1)
+                        }
+                    }
+                    ads.ensureLoaded()
+                }
             }
-            VerticalPager(pager, Modifier.fillMaxSize(), key = { state.items.getOrNull(it)?.id ?: it }) { i ->
-                val s = state.items.getOrNull(i) ?: return@VerticalPager
-                ShortPage(
-                    s, active = pager.currentPage == i, autoplay = prefs.autoplay, dataSaver = prefs.dataSaver,
-                    onLike = { toggleLike(s) }, onComments = { onComments(s) }, onFollow = { toggleFollow(s) },
-                    onReact = { toggleReaction(s, it) }, onSave = { toggleSave(s) },
-                    onDelete = { delete(s) }, onReport = { report(s, it) }
-                )
+            // Pro bought / cap reached: ad pages not yet seen disappear at once (the one on screen stays until swiped)
+            LaunchedEffect(ads.allowed) {
+                if (!ads.allowed) {
+                    val cur = state.slots().getOrNull(pager.currentPage)
+                    state.dropUnseenAds((cur as? FeedSlot.Ad)?.slot?.afterVideoId)
+                }
+            }
+            VerticalPager(pager, Modifier.fillMaxSize(), key = { state.slots().getOrNull(it)?.key ?: it }) { i ->
+                when (val slot = state.slots().getOrNull(i)) {
+                    null -> return@VerticalPager
+                    is FeedSlot.Ad -> AdPage(slot.slot.ad)
+                    is FeedSlot.Video -> {
+                        val s = slot.item
+                        ShortPage(
+                            s, active = pager.currentPage == i, autoplay = prefs.autoplay, dataSaver = prefs.dataSaver,
+                            onLike = { toggleLike(s) }, onComments = { onComments(s) }, onFollow = { toggleFollow(s) },
+                            onReact = { toggleReaction(s, it) }, onSave = { toggleSave(s) },
+                            onDelete = { delete(s) }, onReport = { report(s, it) },
+                            onNotInterested = { notInterested(s) }, onHideCreator = { hideCreator(s) },
+                            onImpression = { if (!s.mine) api.trackEvent("short", s.id, "impression", 1000) },
+                            onShared = { if (!s.mine) api.trackEvent("short", s.id, "share") },
+                            onWatched = { ms, done ->
+                                // what really played: a clean "watch" (and "complete" near the end); a 1-3 s look and leave = "skip"
+                                if (!s.mine) {
+                                    if (ms >= 1000) api.trackEvent("short", s.id, "watch", ms)
+                                    if (done) api.trackEvent("short", s.id, "complete", ms)
+                                    else if (ms >= 1000 && ms < 3000) api.trackEvent("short", s.id, "skip", ms)
+                                }
+                            }
+                        )
+                    }
+                }
             }
         }
 
         // top bar like the reference: round frosted back button (to Home) on the left, round + (upload) on the right
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.KeyboardArrowLeft, "Back", onBack, size = 40, onMedia = true)
+            GlassIconButton(Icons.Filled.KeyboardArrowLeft, tr("a11y_back"), onBack, size = 40, onMedia = true)
             notice?.takeIf { state.items.isNotEmpty() }?.let {
                 Text(it, color = Color(0xFFFFB4A8), fontSize = 12.sp, modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
             } ?: Spacer(Modifier.weight(1f))
-            GlassIconButton(Icons.Filled.Add, "Upload short (max 25 s)", onCreate, size = 40, onMedia = true)
+            GlassIconButton(Icons.Filled.Refresh, tr("a11y_refresh"), { state.reset() }, size = 40, onMedia = true)   // Step 40: a new ranking
+            Spacer(Modifier.width(8.dp))
+            GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)
         }
     }
 }
@@ -228,9 +353,12 @@ fun ShortVideoScreen(
 private fun ShortPage(
     s: ShortVideo, active: Boolean, autoplay: Boolean, dataSaver: Boolean,
     onLike: () -> Unit, onComments: () -> Unit, onFollow: () -> Unit,
-    onReact: (String) -> Unit, onSave: () -> Unit, onDelete: () -> Unit, onReport: (String) -> Unit
+    onReact: (String) -> Unit, onSave: () -> Unit, onDelete: () -> Unit, onReport: (String) -> Unit,
+    onNotInterested: () -> Unit, onHideCreator: () -> Unit, onImpression: () -> Unit, onShared: () -> Unit,
+    onWatched: (Long, Boolean) -> Unit
 ) {
     val context = LocalContext.current
+    LaunchedEffect(s.id, active) { if (active) { delay(1000); onImpression() } }      // Step 40: seen = 1 s as the current video
     var paused by remember(s.id) { mutableStateOf(false) }
     var startedByUser by remember(s.id) { mutableStateOf(false) }      // used when Autoplay is off
     var menu by remember { mutableStateOf(false) }
@@ -248,12 +376,12 @@ private fun ShortPage(
         }
     ) {
         s.posterUrl?.let { AsyncImage(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
-        if (active && mayPlay && url != null) ShortPlayer(url, playing = !paused, Modifier.fillMaxSize())
+        if (active && mayPlay && url != null) ShortPlayer(url, playing = !paused, Modifier.fillMaxSize(), onWatched = onWatched)
 
         if (!mayPlay || paused) {
             Box(Modifier.align(Alignment.Center).size(72.dp).clip(CircleShape).background(ControlFill),
                 contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.PlayArrow, "Play", tint = Color.White, modifier = Modifier.size(40.dp))
+                Icon(Icons.Filled.PlayArrow, tr("a11y_play"), tint = Color.White, modifier = Modifier.size(40.dp))
             }
         }
 
@@ -273,14 +401,19 @@ private fun ShortPage(
                 val send = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "${s.username} on Sociax: ${s.caption}")
                 }
+                onShared()
                 context.startActivity(Intent.createChooser(send, "Share"))
             }
             Box {
                 Rail(Icons.Filled.MoreHoriz, "", Color.White) { menu = true }
                 DropdownMenu(menu, { menu = false }) {
                     if (s.mine) DropdownMenuItem(text = { Text(tr("delete_video")) }, onClick = { menu = false; onDelete() })
-                    else listOf("Spam", "Harassment", "Inappropriate content").forEach { r ->
-                        DropdownMenuItem(text = { Text(trf("report_fmt", reasonLabel(r))) }, onClick = { menu = false; onReport(r) })
+                    else {
+                        DropdownMenuItem(text = { Text(tr("not_interested")) }, onClick = { menu = false; onNotInterested() })
+                        DropdownMenuItem(text = { Text(tr("hide_creator")) }, onClick = { menu = false; onHideCreator() })
+                        listOf("Spam", "Harassment", "Inappropriate content").forEach { r ->
+                            DropdownMenuItem(text = { Text(trf("report_fmt", reasonLabel(r))) }, onClick = { menu = false; onReport(r) })
+                        }
                     }
                 }
             }
@@ -347,17 +480,23 @@ private fun Rail(icon: androidx.compose.ui.graphics.vector.ImageVector, label: S
     }
 }
 
+/** Step 40: plain counters for one video on screen: milliseconds really played, and whether it got to the end (90 %). */
+private class WatchStats { var ms = 0L; var done = false }
+
 /** One ExoPlayer, only for the video currently on screen (saves memory and data). Loops. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun ShortPlayer(url: String, playing: Boolean, modifier: Modifier = Modifier) {
+private fun ShortPlayer(url: String, playing: Boolean, modifier: Modifier = Modifier, onWatched: ((Long, Boolean) -> Unit)? = null) {
     val context = LocalContext.current
     val exo = remember(url) {
         ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(url)); repeatMode = Player.REPEAT_MODE_ONE; prepare()
         }
     }
-    DisposableEffect(exo) { onDispose { exo.release() } }
+    // Step 40: how long this video REALLY played and whether it reached (nearly) the end. Reported once, when it leaves the screen.
+    val stats = remember(exo) { WatchStats() }
+    val watchedCallback by rememberUpdatedState(onWatched)
+    DisposableEffect(exo) { onDispose { watchedCallback?.invoke(stats.ms, stats.done); exo.release() } }
 
     // pause when the app goes to the background
     val owner = LocalLifecycleOwner.current
@@ -373,9 +512,14 @@ private fun ShortPlayer(url: String, playing: Boolean, modifier: Modifier = Modi
 
     var progress by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(exo) {
+        var last = android.os.SystemClock.elapsedRealtime()
         while (true) {
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (exo.isPlaying) stats.ms += (now - last).coerceIn(0L, 1000L)
+            last = now
             val d = exo.duration
             progress = if (d > 0) (exo.currentPosition.toFloat() / d).coerceIn(0f, 1f) else 0f
+            if (progress >= 0.9f) stats.done = true
             delay(250)
         }
     }
@@ -428,6 +572,9 @@ private class CaptureShort : ActivityResultContract<Pair<Uri, Int>, Boolean>() {
     override fun parseResult(resultCode: Int, intent: Intent?) = resultCode == Activity.RESULT_OK
 }
 
+/** Plan v3.2: the longest short video (seconds). The server checks the real file again. */
+private const val MAX_SHORT_SECONDS = 60
+
 private fun mmss(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
 
 @Composable
@@ -437,7 +584,7 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
     val prefs = remember { Prefs(context) }
 
     var stage by remember { mutableStateOf(CStage.Pick) }
-    var limitSec by remember { mutableIntStateOf(25) }               // the user picks 20 or 25 seconds
+    val limitSec = MAX_SHORT_SECONDS                                  // plan v3.2: up to 1 minute; longer clips must be trimmed by the user
     var source by remember { mutableStateOf<Uri?>(null) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var startMs by remember { mutableLongStateOf(0L) }
@@ -451,6 +598,8 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
     val errPrepare = tr("err_prepare"); val errRead = tr("err_read_video"); val errReadTry = tr("err_read_video_try"); val errTooLongFmt = tr("err_too_long")
     var pendingCamera by remember { mutableStateOf<Uri?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
+    // Step 35: a clip already uploaded to Cloudinary (prepared file path -> public id): "try again" re-sends only the record
+    var uploadedClip by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     DisposableEffect(Unit) { onDispose { prepared?.delete() } }
 
@@ -486,7 +635,9 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
 
     fun onPicked(uri: Uri) = launchStep {
         error = null; stage = CStage.Working
-        val d = withContext(Dispatchers.IO) { videoDurationMs(context, uri) }
+        // Step 36 (plan v3.6 section 2): five ways to read the length (see VideoUtils); only when ALL fail the clip is refused,
+        // with a clear message (the reason is in the log). A video is never refused just because one reader failed.
+        val d = videoDurationAny(context, uri)
         if (d <= 0) { error = errReadTry; stage = CStage.Pick; return@launchStep }
         source = uri; durationMs = d; startMs = 0; appliedStart = 0
         if (d > limitMs + 300) stage = CStage.Trim            // longer than allowed: the user MUST trim it
@@ -504,13 +655,21 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
         launchStep {
             stage = CStage.Uploading; error = null
             try {
-                val sig = api.signUpload("short", f.length().toInt())
-                api.uploadVideoToCloudinary(sig, f)
-                api.createShort(sig.publicId, caption.trim(), if (followersOnly) "followers" else "public", commentsOn, limitSec)
+                val publicId = uploadedClip?.takeIf { it.first == f.absolutePath }?.second ?: run {
+                    val sig = api.signUpload("short", f.length().toInt())
+                    api.uploadVideoToCloudinary(sig, f)
+                    uploadedClip = f.absolutePath to sig.publicId
+                    sig.publicId
+                }
+                // "Published" only after the server saved the clip record (onPosted runs after createShort returns)
+                api.createShort(publicId, caption.trim(), if (followersOnly) "followers" else "public", commentsOn, limitSec)
+                uploadedClip = null
                 onPosted()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // the server deletes a refused clip, so after a permanent refusal the next try must upload again
+                if (e is ApiException && e.code in 400..499 && e.reason != "media_full" && e.code != 429) uploadedClip = null
                 error = msg(e); stage = CStage.Preview
             }
             Unit
@@ -540,12 +699,6 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                Text(tr("max_length"), color = Teal, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PillButton("20 s", { limitSec = 20 }, filled = limitSec == 20)
-                    PillButton("25 s", { limitSec = 25 }, filled = limitSec == 25)
-                }
                 Spacer(Modifier.height(16.dp))
                 PillButton(tr("choose_gallery"), {
                     gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
@@ -734,7 +887,7 @@ private fun SavedShortPlayer(s: ShortVideo, dataSaver: Boolean, onClose: () -> U
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (url != null) ShortPlayer(url, playing = true, modifier = Modifier.fillMaxSize())
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, "Back", onClose)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose)
             Spacer(Modifier.weight(1f))
             PillButton(tr("remove_saved"), onUnsave, filled = false)
         }
@@ -752,7 +905,7 @@ fun SearchShortPlayer(s: ShortVideo, dataSaver: Boolean, onClose: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (url != null) ShortPlayer(url, playing = true, modifier = Modifier.fillMaxSize())
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, "Back", onClose)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose)
         }
         Column(Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(16.dp)) {
             Text(s.username, color = Color.White, fontWeight = FontWeight.Bold)

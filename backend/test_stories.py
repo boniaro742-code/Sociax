@@ -6,6 +6,7 @@ import os, tempfile, time
 os.environ["DEV_AUTH"] = "1"
 os.environ["SOCIAX_DB"] = os.path.join(tempfile.mkdtemp(), "t.db")
 import main as m  # noqa: E402
+m.FREE_MEDIA_MB = 150     # a smaller DAILY allowance keeps this test fast (the real free value is 500 MB per day)
 from fastapi import HTTPException  # noqa: E402
 
 m.CLOUD_NAME, m.CLOUD_KEY, m.CLOUD_SECRET = "demo", "key", "secret"
@@ -71,7 +72,7 @@ def test_all():
     SIZES[f"users/{A}/story_big"] = 11 * MB
     assert code(m.create_story, m.NewStory(public_id=f"users/{A}/story_big"), A) == 413
 
-    # --- quota is counted on the server (150 MB combined media) ---
+    # --- quota is counted on the server (daily allowance, here 150 MB) ---
     assert used(A) == MB
     SIZES[f"users/{A}/story_fill"] = 10 * MB
     for i in range(14):
@@ -97,7 +98,7 @@ def test_all():
     m.answer_follow_request("dan", "accept", C)
     assert "@cara" in seen_by(D)
     # public search never reveals stories (search returns users and posts only)
-    assert set(m.search("cara", D).keys()) == {"users", "posts", "shorts"}
+    assert set(m.search("cara", D).keys()) == {"users", "posts", "shorts", "next"}
 
     # --- blocking hides stories both ways and drops the follow ---
     m.block_user("anna", B)

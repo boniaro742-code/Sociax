@@ -9,8 +9,20 @@ if (file("google-services.json").exists()) {
 }
 
 // Backend address. The GitHub build sets SOCIAX_API_URL (your Render https address); otherwise the emulator address is used.
-val apiUrl: String = System.getenv("SOCIAX_API_URL")?.trim()?.trimEnd('/')
-    ?.takeIf { it.startsWith("https://") || it.startsWith("http://") } ?: "http://10.0.2.2:8000"
+// Step 51: an address typed without "https://" (for example "sociax-backend.onrender.com") used to be IGNORED and the APK silently
+// pointed at the emulator address, so a real phone could never reach the server. Now "https://" is added.
+val apiUrl: String = System.getenv("SOCIAX_API_URL")?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+    ?.let { if (it.startsWith("https://") || it.startsWith("http://")) it else "https://$it" } ?: "http://10.0.2.2:8000"
+
+// Step 41 (plan v3.8 section 28): AdMob ids. By default Google's public TEST ids are used (they only show test ads and earn nothing).
+// For real ads set the GitHub variables SOCIAX_ADMOB_APP_ID (ca-app-pub-XXXX~YYYY) and SOCIAX_ADMOB_NATIVE_UNIT_ID (ca-app-pub-XXXX/ZZZZ).
+// A wrongly typed id is ignored (test id used) because a bad App ID would crash the app when it starts.
+val admobTestAppId = "ca-app-pub-3940256099942544~3347511713"
+val admobTestNativeUnit = "ca-app-pub-3940256099942544/2247696110"
+val admobAppId: String = System.getenv("SOCIAX_ADMOB_APP_ID")?.trim()
+    ?.takeIf { Regex("^ca-app-pub-[0-9]{16}~[0-9]{10}$").matches(it) } ?: admobTestAppId
+val admobNativeUnit: String = System.getenv("SOCIAX_ADMOB_NATIVE_UNIT_ID")?.trim()
+    ?.takeIf { Regex("^ca-app-pub-[0-9]{16}/[0-9]{10}$").matches(it) } ?: admobTestNativeUnit
 
 android {
     namespace = "com.sociax.app"
@@ -20,11 +32,14 @@ android {
         applicationId = "com.sociax.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 29
-        versionName = "0.34.0"
+        versionCode = 52
+        versionName = "0.57.0"
         // Backend URL only. NEVER put AI provider keys in the app.
         // 10.0.2.2 = your computer when using the Android emulator. Use your server URL for a real phone.
         buildConfigField("String", "API_BASE_URL", "\"$apiUrl\"")
+        buildConfigField("String", "ADMOB_NATIVE_UNIT_ID", "\"$admobNativeUnit\"")
+        buildConfigField("boolean", "ADMOB_IS_TEST", (admobAppId == admobTestAppId || admobNativeUnit == admobTestNativeUnit).toString())
+        manifestPlaceholders["admobAppId"] = admobAppId
     }
 
     // A FIXED test-signing key (password "android" is the Android default for test keys), so the APK from every
@@ -72,6 +87,7 @@ dependencies {
     // Firebase Auth + Google sign-in (Credential Manager)
     implementation(platform("com.google.firebase:firebase-bom:33.1.2"))
     implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-messaging-ktx")      // Step 46: push (FCM)
     implementation("androidx.credentials:credentials:1.3.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.3.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
@@ -83,6 +99,10 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.3.1")
     implementation("androidx.media3:media3-transformer:1.3.1")
     implementation("androidx.media3:media3-effect:1.3.1")
+
+    // Step 41: AdMob (Google Mobile Ads SDK, native ads) + Google's consent form (UMP) for the EEA / UK
+    implementation("com.google.android.gms:play-services-ads:23.2.0")
+    implementation("com.google.android.ump:user-messaging-platform:2.2.0")
 
     // Backend calls + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

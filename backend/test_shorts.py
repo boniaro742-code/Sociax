@@ -6,6 +6,7 @@ import os, tempfile, time
 os.environ["DEV_AUTH"] = "1"
 os.environ["SOCIAX_DB"] = os.path.join(tempfile.mkdtemp(), "t.db")
 import main as m  # noqa: E402
+m.FREE_MEDIA_MB = 150     # a smaller DAILY allowance keeps this test fast (the real free value is 500 MB per day)
 from fastapi import HTTPException  # noqa: E402
 
 m.CLOUD_NAME, m.CLOUD_KEY, m.CLOUD_SECRET = "demo", "key", "secret"
@@ -40,7 +41,7 @@ def upload(uid, n, dur=10.0, size=5 * MB, fmt="mp4"):
 
 def publish(uid, n, dur=10.0, **kw):
     m._rate.clear()
-    body = dict(caption="hi", audience="public", comments_enabled=True, chosen_seconds=25)
+    body = dict(caption="hi", audience="public", comments_enabled=True, chosen_seconds=60)
     body.update({k: v for k, v in kw.items() if k in body}); 
     return m.create_short(m.NewShort(public_id=upload(uid, n, dur, **{k: v for k, v in kw.items() if k in ("size", "fmt")}), **body), uid)
 
@@ -63,13 +64,14 @@ def test_all():
     assert code(m.sign_upload, m.SignRequest(purpose="short", size_bytes=101 * MB), A) == 413
     assert m.sign_upload(m.SignRequest(purpose="post", size_bytes=MB), A)["allowed_formats"].startswith("jpg")
 
-    # --- duration rules (hard maximum 25 s, user choice 20/25) ---
-    assert publish(A, 1, 24.9)["duration"] == 24.9
-    assert publish(A, 2, 25.4)["id"]                                     # container rounding tolerance
-    assert code(publish, A, 3, 25.6) == 422 and f"users/{A}/short_3" in DESTROYED   # too long: refused AND deleted
-    assert code(publish, A, 4, 30.0) == 422
-    assert code(publish, A, 5, 22.0, chosen_seconds=20) == 422            # chose 20 s but clip is 22 s
-    assert publish(A, 6, 19.9, chosen_seconds=20)["id"]
+    # --- duration rules (plan v3.2: hard maximum 60 s) ---
+    assert publish(A, 1, 59.9)["duration"] == 59.9
+    assert publish(A, 2, 60.4)["id"]                                     # container rounding tolerance
+    assert code(publish, A, 3, 60.6) == 422 and f"users/{A}/short_3" in DESTROYED   # too long: refused AND deleted
+    assert code(publish, A, 4, 90.0) == 422
+    assert publish(A, 6, 40.0)["id"]                                     # 25 s is no longer the limit
+    assert code(publish, A, 13, 22.0, chosen_seconds=20) == 422           # an older app that still sends 20: its own limit is honoured
+    assert publish(A, 14, 19.9, chosen_seconds=20)["id"]
     assert code(publish, A, 7, 0.0) == 422                                # unreadable length
     assert code(publish, A, 8, 10.0, fmt="avi") == 415
     assert code(publish, A, 9, 10.0, size=101 * MB) == 413
@@ -77,16 +79,20 @@ def test_all():
     FAKE["users/dev-b/short_x"] = {"bytes": MB, "duration": 5, "format": "mp4"}
     assert code(m.create_short, m.NewShort(public_id="users/dev-b/short_x"), A) == 403
     assert code(m.create_short, m.NewShort(public_id=f"users/{A}/short_../../x"), A) == 403
-    assert code(m.create_short, m.NewShort(public_id=f"users/{A}/short_1"), A) == 409
+    # Step 35: asking again for the SAME upload (lost answer on a weak network) returns the same clip, never a duplicate
+    n_before = len(ids(A))
+    assert code(m.create_short, m.NewShort(public_id=f"users/{A}/short_1"), A) == 200
+    assert len(ids(A)) == n_before
     assert code(m.create_short, m.NewShort(public_id=f"users/{A}/short_nope"), A) == 422
-    # media-validate (advisory) also refuses > 25 s
-    assert code(m.validate_short, m.ShortMeta(duration_seconds=26, size_mb=5, mime="video/mp4"), A) == 422
+    # media-validate (advisory) also refuses > 60 s, and accepts 26 s
+    assert code(m.validate_short, m.ShortMeta(duration_seconds=61, size_mb=5, mime="video/mp4"), A) == 422
+    assert m.validate_short(m.ShortMeta(duration_seconds=26, size_mb=5, mime="video/mp4"), A)["ok"]
 
-    # --- quota (150 MB combined, server-side) ---
+    # --- quota (daily allowance, here 150 MB, counted on the server) ---
     assert code(publish, A, 10, 10.0, size=99 * MB) == 200               # A now ~ 99+5*3 MB
     assert code(publish, A, 11, 10.0, size=60 * MB) == 413               # would exceed 150 MB
     q = m.media_quota(A); assert q["used_mb"] <= 150
-    # deleting frees the space
+    # deleting a clip removes it, but the DAILY upload counter does not give bytes back (plan v3.2: upload allowance)
     sid = [s for s in m.shorts_feed(None, 30, A)["shorts"] if s["duration"] == 10.0][0]["id"]
     assert m.delete_short(sid, A)["ok"]
     assert code(m.delete_short, sid, A) == 404 and code(m.delete_short, 1, B) == 404   # not yours

@@ -41,6 +41,7 @@ fun AiAssistantScreen(api: ApiClient, onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var quota by remember { mutableStateOf<AiQuota?>(null) }
+    var failedQuestion by remember { mutableStateOf<String?>(null) }    // Step 36: offered again with "Try again" when the AI is unavailable
 
     LaunchedEffect(Unit) { try { quota = api.aiQuota() } catch (e: CancellationException) { throw e } catch (e: Exception) { } }
     LaunchedEffect(msgs.size, busy) { if (msgs.isNotEmpty()) listState.animateScrollToItem(msgs.size - 1 + (if (busy) 1 else 0)) }
@@ -48,21 +49,26 @@ fun AiAssistantScreen(api: ApiClient, onBack: () -> Unit) {
     fun send() {
         val q = text.trim()
         if (q.isEmpty() || busy) return
-        text = ""; error = null; busy = true
+        text = ""; error = null; busy = true; failedQuestion = null
         msgs = msgs + AiMsg(true, q)
         scope.launch {
             try {
                 val r = api.askAi(q)
                 msgs = msgs + AiMsg(false, r.answer)
                 quota = r.quota
-            } catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                error = errText(e)
+                // the server marks "AI unavailable" as retryable (and did not charge the allowance); no answer came, so offer to ask again
+                if (e !is ApiException || e.reason == "ai_unavailable" || e.code == 0 || e.code >= 500) failedQuestion = q
+                if (failedQuestion != null) msgs = msgs.dropLast(1)
+            }
             busy = false
         }
     }
 
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, "Back", onBack)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack)
             Spacer(Modifier.width(10.dp))
             Box(Modifier.size(40.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF6A3DF0), Color(0xFF1FB6FF)))),
                 contentAlignment = Alignment.Center) { Text("AI", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp) }
@@ -97,6 +103,11 @@ fun AiAssistantScreen(api: ApiClient, onBack: () -> Unit) {
                 color = Color.White.copy(.55f), fontSize = 11.sp, modifier = Modifier.padding(vertical = 4.dp))
         }
         error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp)) }
+        failedQuestion?.let { q ->
+            Text(tr("try_again"), color = Teal, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.clip(RoundedCornerShape(50)).clickable { text = q; failedQuestion = null; error = null; send() }
+                    .padding(horizontal = 6.dp, vertical = 6.dp))
+        }
         Spacer(Modifier.height(4.dp))
 
         InsetPill(Modifier.fillMaxWidth()) {
@@ -110,7 +121,7 @@ fun AiAssistantScreen(api: ApiClient, onBack: () -> Unit) {
                         focusedTextColor = Color.White, unfocusedTextColor = Color.White)
                 )
                 Box(Modifier.size(42.dp).clip(CircleShape).background(PaperWhite).clickable { send() }, contentAlignment = Alignment.Center) {
-                    Icon(Icons.Outlined.Send, "Send", tint = Navy, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Outlined.Send, tr("a11y_send"), tint = Navy, modifier = Modifier.size(20.dp))
                 }
             }
         }

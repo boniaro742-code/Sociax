@@ -25,10 +25,22 @@ class Prefs(context: Context) {
         get() = sp.getString("theme_mode", "DARK") ?: "DARK"
         set(v) = sp.edit().putString("theme_mode", v).apply()
 
-    /** Language code: "en" | "fr" | "zh" | "ko" | "ru". First start follows the phone language if it is one of the five, else English. */
+    /** Language code: "en" | "fr" | "zh" | "ko" | "ru". English is the default (plan v3.5). Choosing a language (opening screen or
+     *  Settings) saves it here, on the phone, so it works offline and survives closing the app. */
     var language: String
-        get() = sp.getString("language", null) ?: java.util.Locale.getDefault().language.takeIf { it in setOf("fr", "zh", "ko", "ru") } ?: "en"
-        set(v) = sp.edit().putString("language", v).apply()
+        get() = sp.getString("language", null) ?: "en"
+        set(v) = sp.edit().putString("language", v).putBoolean("language_chosen", true).apply()
+
+    /** True once the person picked a language on THIS phone. Only then does the phone's choice win over the one saved on the account. */
+    val languageChosen: Boolean get() = sp.getBoolean("language_chosen", false)
+
+    /** Uses the language saved on the account (new phone, nothing chosen here yet) without marking it as chosen here. */
+    fun adoptLanguage(code: String) = sp.edit().putString("language", code).apply()
+
+    /** Step 46: push notifications On for THIS phone (opt-in; set Off on sign-out so a signed-out phone shows nothing). */
+    var pushEnabled: Boolean
+        get() = sp.getBoolean("push_enabled", false)
+        set(v) = sp.edit().putBoolean("push_enabled", v).apply()
 
     /** Accent colour as ARGB (default = Sociax teal). */
     var accent: Long
@@ -44,13 +56,24 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("reduce_motion", false)
         set(v) = sp.edit().putBoolean("reduce_motion", v).apply()
 
-    /** Reference of an AI Pro payment that was started but not yet confirmed by the server (so it survives closing the app). */
+    // ---- Daily alarms (plan v3.3 section 1), all kept on the phone ----
+    /** Alarms at 3:00 AM / 3:00 PM are On. Off by default; only turned On by the user (and only after the OS permission is granted). */
+    var alarmsEnabled: Boolean
+        get() = sp.getBoolean("alarms_enabled", false)
+        set(v) = sp.edit().putBoolean("alarms_enabled", v).apply()
+
+    /** Index (0..4) of the chosen built-in alarm sound. */
+    var alarmSound: Int
+        get() = sp.getInt("alarm_sound", 0)
+        set(v) = sp.edit().putInt("alarm_sound", v).apply()
+
+    /** The Home prompt was answered (Yes / No) or closed with X: it is not shown again. Alarms can still be turned On in Settings. */
+    var alarmPromptDone: Boolean
+        get() = sp.getBoolean("alarm_prompt_done", false)
+        set(v) = sp.edit().putBoolean("alarm_prompt_done", v).apply()
+
+    /** Reference of a Sociax Pro payment that was started but not yet confirmed by the server (so it survives closing the app). */
     var pendingPayment: String?
         get() = sp.getString("pending_payment", null)
         set(v) = sp.edit().apply { if (v == null) remove("pending_payment") else putString("pending_payment", v) }.apply()
-
-    /** Same for a Sociax App Pro payment (separate product, separate pending reference). */
-    var pendingAppPayment: String?
-        get() = sp.getString("pending_app_payment", null)
-        set(v) = sp.edit().apply { if (v == null) remove("pending_app_payment") else putString("pending_app_payment", v) }.apply()
 }

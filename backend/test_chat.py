@@ -6,6 +6,7 @@ os.environ["DEV_AUTH"] = "1"
 os.environ["SOCIAX_DB"] = os.path.join(tempfile.mkdtemp(), "c.db")
 import main as m  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 A, B, C, D, E = "dev-a", "dev-b", "dev-c", "dev-d", "dev-e"
 
@@ -16,6 +17,8 @@ def code(fn, *a, **k):
         fn(*a, **k); return 200
     except HTTPException as e:
         return e.status_code
+    except ValidationError:          # real pydantic refuses a bad body before the endpoint runs: same meaning as 422
+        return 422
 
 
 def user(uid, name, private=False):

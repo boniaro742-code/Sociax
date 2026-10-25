@@ -47,7 +47,7 @@ with closing(m.db()) as con:
     con.execute("DELETE FROM blocks"); con.commit()
 ok("blocked people's clips disappear")
 
-assert found(A, "nomatch") == [] and m.search("s", A) == {"users": [], "posts": [], "shorts": []}
+assert found(A, "nomatch") == [] and m.search("s", A) == {"users": [], "posts": [], "shorts": [], "next": {"users": None, "posts": None, "shorts": None}}
 r = m.search("sunset", A)["shorts"][0]
 assert r["video_url"] is None or "video/upload" in r["video_url"]
 assert {"id", "caption", "username", "poster_url", "video_url", "video_url_low"} <= set(r)

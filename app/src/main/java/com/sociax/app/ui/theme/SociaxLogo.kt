@@ -1,8 +1,10 @@
 package com.sociax.app.ui.theme
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
@@ -19,22 +21,28 @@ import androidx.compose.ui.unit.sp
 import com.sociax.app.R
 
 /**
- * The real Sociax logo (the supplied artwork: S + orbit ring + chat bubbles + people + wordmark),
- * shown as an image so it is identical to the reference. It already contains the "Sociax" wordmark.
+ * The real Sociax logo (the supplied artwork: purple chat bubble with a white play triangle + orange-pink play shape),
+ * shown as an image so it is identical to the reference. The artwork has no text, so [showName] adds the
+ * "Sociax" name under it (opening / sign-in screens: plan "Sociax logo/name").
  */
 @Composable
-fun SociaxLogo(modifier: Modifier = Modifier, size: Dp = 200.dp) {
-    Image(
-        painter = painterResource(R.drawable.sociax_logo),
-        contentDescription = "Sociax",
-        modifier = modifier.size(size),
-        contentScale = ContentScale.Fit
-    )
+fun SociaxLogo(modifier: Modifier = Modifier, size: Dp = 200.dp, showName: Boolean = false) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Image(
+            painter = painterResource(R.drawable.sociax_logo),
+            contentDescription = "Sociax",
+            modifier = Modifier.size(size),
+            contentScale = ContentScale.Fit
+        )
+        if (showName) {
+            Spacer(Modifier.height(8.dp))
+            Text("Sociax", color = Color.White, fontSize = (size.value * 0.17f).sp, fontWeight = FontWeight.ExtraBold)
+        }
+    }
 }
 
 /**
- * The small header mark of the reference Home screen: a white "S" followed by the word "Sociax" in bold white.
- * (The full colourful logo is too detailed to read at this size, so the header uses its white one-colour form.)
+ * The small header mark of the reference Home screen: the colourful Sociax logo followed by the word "Sociax" in bold white.
  */
 @Composable
 fun SociaxMark(modifier: Modifier = Modifier, textSize: Int = 24) {

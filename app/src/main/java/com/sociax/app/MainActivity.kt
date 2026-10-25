@@ -24,10 +24,12 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.unit.dp
+import com.sociax.app.data.AdsController
 import com.sociax.app.data.ApiClient
 import com.sociax.app.data.ApiException
 import com.sociax.app.data.AuthRepository
 import com.sociax.app.data.Me
+import com.sociax.app.data.Perf
 import com.sociax.app.data.Prefs
 import com.sociax.app.data.Post
 import com.sociax.app.data.ShortVideo
@@ -39,6 +41,7 @@ import com.sociax.app.ui.theme.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,6 +92,7 @@ private sealed interface Overlay {
     data object Blocked : Overlay
     data object Saved : Overlay
     data object SavedShorts : Overlay   // Step 21
+    data object ChangeLock : Overlay    // Step 32
 }
 
 @Composable
@@ -106,11 +110,19 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     var stage by remember { mutableStateOf(Stage.Loading) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var startupError by remember { mutableStateOf<String?>(null) }   // Step 37: shown on the start-up screen with "Try again"
+    var waking by remember { mutableStateOf(false) }                  // Step 51: the server is being retried automatically (sleeping free server)
     var overlay by remember { mutableStateOf<Overlay?>(null) }
     var me by remember { mutableStateOf(Me(onboarded = false)) }
     var tab by remember { mutableStateOf(Tab.Home) }
     var feedKey by remember { mutableIntStateOf(0) }   // bump to reload the feed
     val shorts = remember { ShortsState() }            // Short Video feed, kept while pages open on top
+    val ads = remember { AdsController(api, activity.applicationContext) }   // Step 41: AdMob (Free accounts only, decided by the server)
+    // Step 41: every time the Short Video tab is the screen the person is looking at (opened, or back from Settings / a payment),
+    // ask the SERVER again who may see ads: a Pro purchase switches ads off at once, a reached cap or a new day is noticed.
+    LaunchedEffect(stage, tab, overlay) {
+        if (stage == Stage.Ready && tab == Tab.Video && overlay == null) ads.refresh(activity)
+    }
 
     // Phone back button closes an open page. Leaving comments/search may change counts, so reload the feed.
     var returnTo by remember { mutableStateOf<Overlay?>(null) }   // a post opened from "Saved posts" goes back there
@@ -118,7 +130,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
         val o = overlay
         overlay = when (o) {
             is Overlay.GroupInfo -> Overlay.Conversation(o.chat)       // group info goes back to its chat
-            Overlay.Blocked, Overlay.Saved, Overlay.SavedShorts -> Overlay.Settings   // the Settings lists go back to Settings
+            Overlay.Blocked, Overlay.Saved, Overlay.SavedShorts, Overlay.ChangeLock -> Overlay.Settings   // the Settings lists go back to Settings
             is Overlay.Comments -> returnTo.also { returnTo = null }
             is Overlay.UserProfile -> o.backTo           // a profile opened from a followers list goes back to that list
             is Overlay.FollowList -> o.backTo
@@ -128,16 +140,78 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     }
 
     // Decide the starting screen: returning users skip onboarding.
-    suspend fun routeAfterLogin() {
-        try {
-            me = api.me()
-            stage = if (me.onboarded) Stage.Ready else Stage.NeedsOnboarding
-            error = null
-        } catch (e: ApiException) {
-            error = e.message; stage = Stage.LoggedOut
-        } catch (e: Exception) {
-            error = "Cannot reach the Sociax server. Is the backend running?"; stage = Stage.LoggedOut
+    /** Step 37 (plan v3.5): the app language and the account language stay together.
+     *  New phone, nothing chosen here yet -> the account's language is used. Chosen here -> it is saved on the account. */
+    suspend fun syncLanguage() {
+        val saved = me.language
+        if (!prefs.languageChosen && saved != null) {
+            lang = Lang.fromCode(saved); prefs.adoptLanguage(lang.code)
+        } else if (prefs.languageChosen && me.onboarded && saved != lang.code) {
+            runCatching { api.setLanguage(lang.code) }.onSuccess { me = me.copy(language = lang.code) }
         }
+    }
+
+    // Step 51: what the person sees when the server cannot be reached after choosing a Google account. It now says WHAT failed and which
+    // address the app is using (so one screenshot is enough to find the cause), and an app built WITHOUT the server address says so.
+    fun connectFailure(detail: String): String {
+        if (BuildConfig.API_BASE_URL.contains("10.0.2.2")) return Strings.get(lang, "err_no_server_address")
+        val host = runCatching { java.net.URI(BuildConfig.API_BASE_URL).host }.getOrNull() ?: BuildConfig.API_BASE_URL
+        return Strings.get(lang, "err_connecting") + " [" + detail + " \u00B7 " + host + "]"
+    }
+
+    suspend fun routeAfterLogin() {
+        // Step 51: a free Render server sleeps and answers 502 / 503 or times out while it wakes up. Try up to 3 times by itself
+        // (8 s, then 20 s apart) before showing the error, so the person does not have to tap "Try again" for a normal wake-up.
+        val pauses = longArrayOf(8_000L, 20_000L)
+        var attempt = 0
+        while (true) {
+            var problem: String? = null
+            try {
+                startupError = null
+                me = api.me()
+                if (me.onboarded) syncLanguage()
+                stage = if (me.onboarded) Stage.Ready else Stage.NeedsOnboarding
+                error = null
+                waking = false
+                Perf.end("login_to_ready")
+                return
+            } catch (e: ApiException) {
+                // Plan v3.6 section 4: choosing a Google account is NOT a finished login. If the server answers wrong, say what it means.
+                android.util.Log.w("SociaxAuth", "after Google sign-in the server answered HTTP ${e.code}")
+                if (e.code >= 500) {        // the server is starting or failing: stay signed in
+                    problem = "HTTP ${e.code}"
+                } else {
+                    waking = false
+                    error = when (e.code) {
+                        404 -> Strings.get(lang, "err_wrong_server")
+                        401 -> Strings.get(lang, "err_session_ended")
+                        else -> e.message
+                    }
+                    stage = Stage.LoggedOut
+                    return
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("SociaxAuth", "after Google sign-in the server could not be reached (${e.javaClass.simpleName})")
+                problem = e.javaClass.simpleName.ifEmpty { "error" }
+            }
+            // reached only when the server could not be used this time (stay signed in; never throw the person back to the login screen)
+            if (attempt < pauses.size && !BuildConfig.API_BASE_URL.contains("10.0.2.2")) {
+                waking = true; stage = Stage.Loading
+                delay(pauses[attempt]); attempt++
+            } else {
+                waking = false
+                startupError = connectFailure(problem ?: "error"); stage = Stage.Loading
+                return
+            }
+        }
+    }
+
+    // Step 37: timings (Logcat tag SociaxPerf): process start -> first screen -> login screen / home
+    LaunchedEffect(stage) {
+        Perf.mark(when (stage) {
+            Stage.Loading -> "startup_screen_shown"; Stage.LoggedOut -> "login_screen_shown"
+            Stage.NeedsOnboarding -> "onboarding_shown"; Stage.Ready -> "home_ready"
+        })
     }
 
     LaunchedEffect(Unit) {
@@ -154,6 +228,30 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
         lifeOwner.lifecycle.addObserver(obs)
         onDispose { lifeOwner.lifecycle.removeObserver(obs) }
     }
+    // Step 32 (plan v3.3 section 2): mandatory App Lock. A fresh start always asks; coming back asks again after the timeout.
+    // No lock yet (first-time account, or an older install) -> the setup screen comes first and cannot be skipped.
+    val lock = remember { com.sociax.app.data.AppLock(activity) }
+    var lockSet by remember { mutableStateOf(lock.isSet) }
+    var locked by remember { mutableStateOf(lock.isSet) }
+    DisposableEffect(lifeOwner) {
+        var leftAt = 0L
+        val obs = LifecycleEventObserver { _, ev ->
+            if (ev == Lifecycle.Event.ON_STOP) leftAt = android.os.SystemClock.elapsedRealtime()
+            else if (ev == Lifecycle.Event.ON_START) {
+                if (lock.isSet && leftAt > 0 && android.os.SystemClock.elapsedRealtime() - leftAt >= lock.timeoutSec * 1000L) locked = true
+                leftAt = 0L
+            }
+        }
+        lifeOwner.lifecycle.addObserver(obs)
+        onDispose { lifeOwner.lifecycle.removeObserver(obs) }
+    }
+
+    // Step 33: if daily alarms are On, make sure the next 3:00 AM / 3:00 PM are scheduled for the phone's current time zone
+    LaunchedEffect(stage) { if (stage == Stage.Ready && prefs.alarmsEnabled) com.sociax.app.data.DailyAlarm.schedule(activity) }
+
+    // Step 46: push is On for this phone -> register the CURRENT Firebase token again (it may have changed since last time)
+    LaunchedEffect(stage) { if (stage == Stage.Ready) com.sociax.app.data.PushRegistrar.refresh(activity, api) }
+
     LaunchedEffect(stage, me.showLastSeen, appOnScreen) {
         if (stage != Stage.Ready || !me.showLastSeen || !appOnScreen) return@LaunchedEffect
         while (true) {
@@ -182,10 +280,11 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     onDismiss = { LimitEvents.current.value = null })
             }
             when {
-                stage == Stage.Loading -> LoadingScreen()
-                stage == Stage.LoggedOut -> LoginScreen(busy, error) {
+                stage == Stage.Loading -> LoadingScreen(startupError ?: (if (waking) Strings.get(lang, "waking_server") else null), if (startupError != null) ({ scope.launch { routeAfterLogin() } }) else null)
+                stage == Stage.LoggedOut -> LoginScreen(busy, error, lang, { lang = it; prefs.language = it.code }) {
                     scope.launch {
                         busy = true; error = null
+                        Perf.start("login_to_ready")
                         auth.signInWithGoogle(activity)
                             .onSuccess { routeAfterLogin() }
                             .onFailure { error = it.message ?: "Sign-in failed" }
@@ -196,7 +295,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     scope.launch {
                         busy = true; error = null
                         try {
-                            api.onboard(name, username, age, source)
+                            api.onboard(name, username, age, source, if (prefs.languageChosen) lang.code else null)
                             me = api.me()
                             stage = Stage.Ready
                         } catch (e: ApiException) {
@@ -211,7 +310,10 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     Overlay.EditProfile -> EditProfileScreen(me, api, onSaved = { me = it }, onBack = { overlay = null })
                     Overlay.Settings -> SettingsScreen(
                         mode = themeMode, onMode = { themeMode = it; prefs.themeMode = it.name },
-                        lang = lang, onLang = { lang = it; prefs.language = it.code },
+                        lang = lang, onLang = {
+                            lang = it; prefs.language = it.code
+                            scope.launch { runCatching { api.setLanguage(it.code) } }      // also saved on the account (the phone keeps its own copy)
+                        },
                         accent = accent, onAccent = { accent = it; prefs.accent = it; Teal = Color(it) },
                         textSize = textSize, onTextSize = { textSize = it; prefs.textSize = it.name },
                         reduceMotion = reduceMotion, onReduceMotion = { reduceMotion = it; prefs.reduceMotion = it },
@@ -221,8 +323,15 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                         onBlocked = { overlay = Overlay.Blocked },
                         onSaved = { overlay = Overlay.Saved },
                         onSavedShorts = { overlay = Overlay.SavedShorts },
-                        onDeleted = { auth.signOut(); overlay = null; me = Me(onboarded = false); stage = Stage.LoggedOut },
-                        onLogout = { auth.signOut(); overlay = null; me = Me(onboarded = false); stage = Stage.LoggedOut })
+                        onDeleted = { prefs.pushEnabled = false; auth.signOut(); ads.reset(); shorts.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; me = Me(onboarded = false); stage = Stage.LoggedOut },
+                        onLogout = {
+                            val finish = { auth.signOut(); ads.reset(); shorts.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; me = Me(onboarded = false); stage = Stage.LoggedOut }
+                            // Step 46: tell the server this phone no longer wants push for this account BEFORE signing out (3 s at most; the phone stops showing pushes at once anyway)
+                            if (prefs.pushEnabled) scope.launch { withTimeoutOrNull(3000) { com.sociax.app.data.PushRegistrar.disable(activity, api) }; prefs.pushEnabled = false; finish() }
+                            else finish()
+                        },
+                        lock = lock, onChangeLock = { overlay = Overlay.ChangeLock })
+                    Overlay.ChangeLock -> ChangeLockScreen(lock, onBack = { overlay = Overlay.Settings }, onDone = { overlay = Overlay.Settings })
                     Overlay.Blocked -> BlockedUsersScreen(api, onBack = { overlay = Overlay.Settings })
                     Overlay.SavedShorts -> SavedShortsScreen(api, onBack = { overlay = Overlay.Settings })
                     Overlay.Saved -> SavedPostsScreen(api, onBack = { overlay = Overlay.Settings },
@@ -285,7 +394,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                     onRequests = { overlay = Overlay.Requests },
                                     onCreateGroup = { tab = Tab.Chat; overlay = Overlay.NewGroup },
                                     api = api, onOpenPost = { overlay = Overlay.Comments(it) })
-                                Tab.Video -> ShortVideoScreen(api, shorts,
+                                Tab.Video -> ShortVideoScreen(api, shorts, ads,
                                     onCreate = { overlay = Overlay.NewShort },
                                     onComments = { overlay = Overlay.ShortComments(it) },
                                     onBack = { tab = Tab.Home })
@@ -299,6 +408,12 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                         BottomBar(tab, Modifier.align(Alignment.BottomCenter)) { tab = it }
                     }
                 } }
+            }
+            // Covers everything (and blocks touches) while locked or while the lock is not set up yet.
+            if (stage == Stage.Ready && (!lockSet || locked)) {
+                LockGate(activity, auth, api, lock, mustSetup = !lockSet,
+                    onUnlocked = { locked = false },
+                    onSetupDone = { lockSet = true; locked = false })
             }
         }
       }

@@ -42,7 +42,7 @@ fun Avatar(url: String?, size: Int, modifier: Modifier = Modifier) {
             .background(Brush.linearGradient(listOf(Teal, BlueMid))),
         contentAlignment = Alignment.Center
     ) {
-        if (url != null) AsyncImage(url, "Profile photo", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (url != null) AsyncImage(url, tr("a11y_profile_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     }
 }
 
@@ -87,7 +87,7 @@ fun EditProfileScreen(me: Me, api: ApiClient, onSaved: (Me) -> Unit, onBack: () 
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, "Back", onBack)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack)
             Spacer(Modifier.width(12.dp))
             Text(tr("edit_profile"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
@@ -99,7 +99,7 @@ fun EditProfileScreen(me: Me, api: ApiClient, onSaved: (Me) -> Unit, onBack: () 
             Box(
                 Modifier.align(Alignment.BottomEnd).size(34.dp).clip(CircleShape).background(Teal),
                 contentAlignment = Alignment.Center
-            ) { Icon(Icons.Filled.CameraAlt, "Change photo", tint = Navy, modifier = Modifier.size(18.dp)) }
+            ) { Icon(Icons.Filled.CameraAlt, tr("a11y_change_photo"), tint = Navy, modifier = Modifier.size(18.dp)) }
         }
         Spacer(Modifier.height(20.dp))
         GlassField(name, { name = it.take(50) }, tr("display_name"))

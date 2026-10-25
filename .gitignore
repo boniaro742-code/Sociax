@@ -20,3 +20,8 @@ __pycache__/
 *.pem
 .cxx/
 captures/
+
+# Step 48: Go build output
+backend-go/engine
+backend-go/sociax-engine
+backend-go/*.exe

@@ -115,7 +115,7 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
                             }
                         }, filled = false)
                         Box {
-                            GlassIconButton(Icons.Filled.MoreVert, "More", { menu = true })
+                            GlassIconButton(Icons.Filled.MoreVert, tr("a11y_more"), { menu = true })
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                                 DropdownMenuItem(text = { Text(tr("block_user") + " " + p.username) },
                                     onClick = { menu = false; act { api.setBlock(p.username, true) } })

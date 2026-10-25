@@ -30,15 +30,17 @@ with closing(m.db()) as con:
 assert e is not None and e.status_code == 429 and isinstance(e.detail, dict), e
 assert e.detail["code"] == "ai_limit" and 0 < e.detail["reset_in_seconds"] <= 48 * 3600 and "Free AI limit" in e.detail["message"]
 
-# ---- media: the 150 MB (here 1 MB) quota is full -> 413 with code media_full
+# ---- media: today's allowance (500 MB free; here 1 MB) is full -> 413 with code media_full and the reset time
 m.CLOUD_NAME, m.CLOUD_KEY, m.CLOUD_SECRET = "c", "k", "s"
 m.FREE_MEDIA_MB = 1
 with closing(m.db()) as con:
     con.execute("INSERT INTO media(public_id, uid, kind, bytes, created_at) VALUES (?,?,?,?,?)",
                 ("x", A, "post", 900 * 1024, int(time.time())))
+    m.media_take(con, A, 900 * 1024)
     con.commit()
 e = err(m.sign_upload, m.SignRequest(purpose="post", size_bytes=300 * 1024), A)
 assert e is not None and e.status_code == 413 and e.detail["code"] == "media_full", e
+assert 0 < e.detail["reset_in_seconds"] <= 24 * 3600 and "Daily media limit" in e.detail["message"], e.detail
 # a file that still fits is signed normally
 assert err(m.sign_upload, m.SignRequest(purpose="post", size_bytes=50 * 1024), A) is None
 # per-file size errors stay plain text (not a quota problem, no upgrade offer)

@@ -1,6 +1,11 @@
 package com.sociax.app.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -9,37 +14,84 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.ui.theme.*
 
 private val USERNAME_RE = Regex("^[a-z0-9_.]{3,20}$")
 
+/** Start-up screen: just the logo. If the server cannot be reached yet (for example a free server that is waking up) it says so
+ *  and offers "Try again": the person stays signed in and nothing else is waiting on it. */
 @Composable
-fun LoadingScreen() {
+fun LoadingScreen(message: String? = null, onRetry: (() -> Unit)? = null) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        SociaxLogo()
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            SociaxLogo(showName = true)
+            if (message != null) {
+                Spacer(Modifier.height(24.dp))
+                Text(message, color = Color(0xFFFFB4A8), fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
+                if (onRetry != null) {
+                    Spacer(Modifier.height(12.dp))
+                    PillButton(tr("try_again"), onRetry)
+                }
+            }
+        }
+    }
+}
+
+/** "Choose your language" (plan v3.5 section 24): the five languages, available BEFORE Google sign-in, no account and no internet needed.
+ *  The whole app changes at once because the app reads one saved language everywhere. */
+@Composable
+fun LanguageSelector(lang: Lang, onLang: (Lang) -> Unit, modifier: Modifier = Modifier) {
+    var open by remember { mutableStateOf(false) }
+    Column(modifier, horizontalAlignment = Alignment.End) {
+        Text(tr("choose_language"), color = Color.White.copy(alpha = .7f), fontSize = 12.sp)
+        Spacer(Modifier.height(4.dp))
+        Box {
+            InsetPill(Modifier.clickable { open = true }) {
+                Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Language, tr("choose_language"), tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(lang.label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Filled.ArrowDropDown, null, tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(20.dp))
+                }
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                Lang.values().forEach { l ->
+                    DropdownMenuItem(
+                        text = { Text(l.label) },
+                        onClick = { open = false; onLang(l) },
+                        trailingIcon = if (l == lang) ({ Icon(Icons.Filled.Check, null) }) else null
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-fun LoginScreen(busy: Boolean, error: String?, onGoogle: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        SociaxLogo(size = 220.dp)
-        Spacer(Modifier.height(48.dp))
-        // Google is the ONLY sign-in button (plan section 3)
-        if (busy) CircularProgressIndicator(color = Teal)
-        else PillButton(tr("continue_google"), onGoogle, Modifier.fillMaxWidth())
-        error?.let {
-            Spacer(Modifier.height(12.dp))
-            Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp)
+fun LoginScreen(busy: Boolean, error: String?, lang: Lang, onLang: (Lang) -> Unit, onGoogle: () -> Unit) {
+    Box(Modifier.fillMaxSize()) {
+        // at the TOP of the opening screen, before sign-in (plan v3.5 section 24)
+        LanguageSelector(lang, onLang, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp))
+        Column(
+            Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            SociaxLogo(size = 200.dp, showName = true)
+            Spacer(Modifier.height(48.dp))
+            // Google is the ONLY sign-in button (plan section 3)
+            if (busy) CircularProgressIndicator(color = Teal)
+            else PillButton(tr("continue_google"), onGoogle, Modifier.fillMaxWidth())
+            error?.let {
+                Spacer(Modifier.height(12.dp))
+                Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(16.dp))
+            Text(tr("terms_note"), color = Color.White.copy(alpha = .6f), fontSize = 12.sp)
         }
-        Spacer(Modifier.height(16.dp))
-        Text(tr("terms_note"), color = Color.White.copy(alpha = .6f), fontSize = 12.sp)
     }
 }
 
@@ -92,11 +144,8 @@ fun OnboardingScreen(busy: Boolean, serverError: String?, onSubmit: (name: Strin
                 Title(tr("upgrade_anytime"))
                 GlassPanel(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text(tr("ai_pro_title"), color = Teal, fontWeight = FontWeight.Bold)
-                        Text(tr("ai_pro_body"), color = Color.White)
-                        Spacer(Modifier.height(12.dp))
-                        Text(tr("app_pro_title"), color = Teal, fontWeight = FontWeight.Bold)
-                        Text(tr("app_pro_body"), color = Color.White)
+                        Text(tr("pro_title"), color = Teal, fontWeight = FontWeight.Bold)
+                        Text(tr("pro_body"), color = Color.White)
                     }
                 }
                 Spacer(Modifier.height(20.dp))

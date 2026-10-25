@@ -7,6 +7,7 @@ os.environ["DEV_AUTH"] = "1"
 os.environ["SOCIAX_DB"] = os.path.join(tempfile.mkdtemp(), "t.db")
 import main as m  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
 
 m.CLOUD_NAME, m.CLOUD_KEY, m.CLOUD_SECRET = "demo", "key", "secret"
 SIZES = {}
@@ -20,6 +21,8 @@ def code(fn, *a, **k):
         fn(*a, **k); return 200
     except HTTPException as e:
         return e.status_code
+    except ValidationError:          # real pydantic refuses a bad body before the endpoint runs: same meaning as 422
+        return 422
 
 
 def user(uid, name, private=False):
@@ -57,7 +60,7 @@ def test_all():
 
     # empty / too long are refused, the exact maximum is allowed
     assert code(m.create_text_story, m.NewTextStory(text="   "), A) == 422
-    assert code(m.create_text_story, m.NewTextStory(text="x" * (m.STORY_CAPTION_MAX + 1)), A) == 422
+    assert code(lambda: m.create_text_story(m.NewTextStory(text="x" * (m.STORY_CAPTION_MAX + 1)), A)) == 422
     assert code(m.create_text_story, m.NewTextStory(text="x" * m.STORY_CAPTION_MAX), A) == 200
 
     # a photo story next to it is still "photo"

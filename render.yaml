@@ -37,3 +37,27 @@ services:
         value: "10"
       - key: CHAPA_SECRET_KEY   # TEST key only
         sync: false
+      # Step 48 (optional Go ranking engine, see backend-go/README.md). Leave RANK_ENGINE_URL EMPTY and Python ranks by itself (default).
+      - key: RANK_ENGINE_URL      # e.g. https://sociax-engine.onrender.com   (no slash at the end)
+        sync: false
+      - key: RANK_ENGINE_TOKEN    # the SAME secret as ENGINE_TOKEN of the engine service (24+ characters)
+        sync: false
+      - key: RANK_ENGINE_TIMEOUT_MS
+        value: "800"
+
+# Step 50: the Go engine as its own service (ACTIVE). Render asks for ENGINE_TOKEN (a secret of 24+ characters) when it creates it.
+# Do NOT fill RANK_ENGINE_URL / RANK_ENGINE_TOKEN of sociax-backend until `python tools/check_engine_deploy.py` says PASS on every line
+# (see backend-go/README.md). The free plan sleeps: the first calls after a sleep fall back to Python, the feed never fails.
+  - type: web
+    name: sociax-engine
+    runtime: go
+    plan: free
+    rootDir: backend-go
+    buildCommand: go build -o engine ./cmd/sociax-engine
+    startCommand: ./engine
+    healthCheckPath: /healthz
+    envVars:
+      - key: ENGINE_TOKEN       # secret, 24+ characters; the same value goes into RANK_ENGINE_TOKEN of sociax-backend
+        sync: false
+      - key: LOG_LEVEL
+        value: info

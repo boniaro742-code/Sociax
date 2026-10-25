@@ -1,5 +1,8 @@
 package com.sociax.app.ui.screens
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -19,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -63,8 +67,56 @@ fun NotificationsSection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit) {
             }
             error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
             Text(tr("notif_note"), color = Color.White.copy(.6f), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+            PushSwitch(api)                                                              // Step 46
         }
     }
+}
+
+/** Step 46: push (Firebase Cloud Messaging) for THIS phone. Opt-in; the server uses the six switches above to decide what to send. */
+@Composable
+private fun PushSwitch(api: ApiClient) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = remember { Prefs(ctx) }
+    val available = remember { PushRegistrar.available() }
+    var on by remember { mutableStateOf(prefs.pushEnabled && PushRegistrar.permissionGranted(ctx)) }
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+
+    fun turnOn() {
+        busy = true
+        scope.launch {
+            try { PushRegistrar.enable(ctx, api); on = true; msg = null }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { on = false; msg = errText(e) }
+            busy = false
+        }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) turnOn() else { on = false; msg = tr("push_permission_needed") }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(tr("push_title"), color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(tr("push_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        }
+        Switch(
+            on,
+            { v ->
+                if (v) {
+                    if (PushRegistrar.permissionGranted(ctx)) turnOn() else permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    on = false; msg = null
+                    scope.launch { PushRegistrar.disable(ctx, api) }
+                }
+            },
+            enabled = available && !busy,
+            colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+        )
+    }
+    if (!available) Text(tr("push_unavailable"), color = Color.White.copy(.6f), fontSize = 12.sp)
+    msg?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
 }
 
 @Composable

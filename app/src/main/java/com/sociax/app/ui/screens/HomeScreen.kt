@@ -43,6 +43,7 @@ import com.sociax.app.data.timeAgo
 import com.sociax.app.ui.theme.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Applies like / save / follow / delete / report to a list of posts (optimistic where safe). */
@@ -54,6 +55,27 @@ class PostController(
 ) {
     private fun fail(e: Exception) =
         onError(if (e is ApiException) e.message ?: "Something went wrong" else "Cannot reach the Sociax server.")
+
+    /** Step 40: Home sets this to true. "Not interested" / "Hide creator" belong to the feed only (not to profiles or saved lists). */
+    var feedControls = false
+
+    /** The post stayed on screen for one second: a clean "seen" signal for the For You ranker (sent in the background). */
+    fun seen(p: Post) { if (!p.mine) api.trackEvent("post", p.id, "impression", 1000) }
+
+    /** The share sheet was opened (the phone cannot know whether the person finished sharing). */
+    fun shared(p: Post) { if (!p.mine) api.trackEvent("post", p.id, "share") }
+
+    fun notInterested(p: Post) {
+        scope.launch {
+            try { api.recFeedback("not_interested", "post", p.id); posts.removeAll { it.id == p.id } } catch (e: Exception) { fail(e) }
+        }
+    }
+
+    fun hideCreator(p: Post) {
+        scope.launch {
+            try { api.recFeedback("hide_creator", "post", p.id); posts.removeAll { it.username == p.username } } catch (e: Exception) { fail(e) }
+        }
+    }
 
     private fun replace(id: Long, f: (Post) -> Post) {
         val i = posts.indexOfFirst { it.id == id }
@@ -124,22 +146,39 @@ fun HomeScreen(
     var notice by remember { mutableStateOf<String?>(null) }
     var reload by remember { mutableIntStateOf(0) }
     var storyGroups by remember { mutableStateOf<List<StoryGroup>>(emptyList()) }
-    val ctl = remember { PostController(api, scope, posts) { notice = it } }
+    val ctl = remember { PostController(api, scope, posts) { notice = it }.also { it.feedControls = true } }
+    // Step 40: For You uses the ranked list (a cursor per refresh). If the server answers newest-first instead, paging continues with "before".
+    var cursor by remember { mutableStateOf<String?>(null) }
+    var rankedMode by remember { mutableStateOf(false) }
+    var pageFailed by remember { mutableStateOf(false) }      // a failed "next page" must not retry in a tight loop; "Try again" restarts
 
     suspend fun loadPage(reset: Boolean) {
         loading = true
         try {
-            val page = api.feed(tab, if (reset) null else posts.lastOrNull()?.id)
+            if (reset) { cursor = null; rankedMode = tab == "for_you" }
+            val page: List<Post>
+            val last: Boolean
+            if (rankedMode) {
+                val r = api.feedForYou(if (reset) null else cursor)
+                cursor = r.nextCursor
+                if (!r.ranked) rankedMode = false
+                page = r.items
+                last = if (r.ranked) r.nextCursor == null else r.items.size < 20
+            } else {
+                page = api.feed(tab, if (reset) null else posts.lastOrNull()?.id)
+                last = page.size < 20
+            }
             if (reset) { posts.clear(); endReached = false }
             posts.addAll(page.filter { n -> posts.none { it.id == n.id } })
-            if (page.size < 20) endReached = true
+            if (last) endReached = true
             if (reset) notice = null
+            pageFailed = false
         } catch (e: CancellationException) {
             throw e
         } catch (e: ApiException) {
-            notice = e.message
+            notice = e.message; pageFailed = true
         } catch (e: Exception) {
-            notice = "Cannot reach the Sociax server. Is the backend running?"
+            notice = "Cannot reach the Sociax server. Is the backend running?"; pageFailed = true
         }
         loading = false
     }
@@ -162,15 +201,16 @@ fun HomeScreen(
         item { // header like the reference: white S + "Sociax" on the left, three round frosted buttons on the right
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 SociaxMark(Modifier.weight(1f))
-                GlassIconButton(Icons.Filled.Add, "New post", onCreate); Spacer(Modifier.width(8.dp))
+                GlassIconButton(Icons.Filled.Add, tr("a11y_new_post"), onCreate); Spacer(Modifier.width(8.dp))
                 Box {   // Step 27: the bell opens the notification list; a small dot shows unread ones
-                    GlassIconButton(Icons.Outlined.Notifications, "Notifications", onNotifications)
+                    GlassIconButton(Icons.Outlined.Notifications, tr("a11y_notifications"), onNotifications)
                     if (notifUnread > 0) Box(Modifier.align(Alignment.TopEnd).size(11.dp).clip(CircleShape).background(Teal))
                 }
                 Spacer(Modifier.width(8.dp))
-                GlassIconButton(Icons.Outlined.ChatBubbleOutline, "Messages", onMessages)
+                GlassIconButton(Icons.Outlined.ChatBubbleOutline, tr("a11y_messages"), onMessages)
             }
         }
+        item { AlarmPrompt() }      // Step 33: optional daily-alarm prompt (Yes / No / X); shows nothing once answered
         item { StoriesRow(storyGroups, onAddStory) { onOpenStory(storyGroups, it) } }
         item { // For you / Following: dark inset pill with a soft-white selected part, exactly like the reference
             InsetPill(Modifier.fillMaxWidth()) {
@@ -193,7 +233,14 @@ fun HomeScreen(
                 }
             }
         }
-        notice?.let { item { Text(it, color = Color(0xFFFFB4A8), fontSize = 13.sp) } }
+        notice?.let { item {   // Step 35: a feed failure always offers "Try again" (never a silent empty feed)
+            Column {
+                Text(it, color = Color(0xFFFFB4A8), fontSize = 13.sp)
+                Text(tr("try_again"), color = Teal, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(50)).clickable { notice = null; reload++ }
+                        .padding(horizontal = 4.dp, vertical = 6.dp))
+            }
+        } }
         if (!loading && posts.isEmpty() && notice == null) item {
             Text(
                 if (tab == "following") tr("empty_following") else tr("empty_foryou"),
@@ -201,8 +248,9 @@ fun HomeScreen(
             )
         }
         items(posts, key = { it.id }) { p ->
+            LaunchedEffect(p.id) { delay(1000); ctl.seen(p) }      // Step 40: counts only after 1 s really on screen (pre-loaded items do not count)
             PostCard(p, ctl, onComments)
-            if (p.id == posts.last().id && !endReached && !loading) {
+            if (p.id == posts.last().id && !endReached && !loading && !pageFailed) {
                 LaunchedEffect(p.id) { scope.launch { loadPage(false) } }
             }
         }
@@ -257,11 +305,17 @@ fun PostCard(p: Post, ctl: PostController, onComments: (Post) -> Unit) {
                 else -> PillButton(tr("following"), { ctl.toggleFollow(p) }, filled = false)
             }
             Box {
-                GlassIconButton(Icons.Filled.MoreVert, "More", { menu = true }, size = 36, onMedia = true)
+                GlassIconButton(Icons.Filled.MoreVert, tr("a11y_more"), { menu = true }, size = 36, onMedia = true)
                 DropdownMenu(menu, { menu = false }) {
                     if (p.mine) DropdownMenuItem(text = { Text(tr("delete_post")) }, onClick = { menu = false; ctl.delete(p) })
-                    else listOf("Spam", "Harassment", "Inappropriate content").forEach { r ->
-                        DropdownMenuItem(text = { Text(trf("report_fmt", reasonLabel(r))) }, onClick = { menu = false; ctl.report(p, r) })
+                    else {
+                        if (ctl.feedControls) {
+                            DropdownMenuItem(text = { Text(tr("not_interested")) }, onClick = { menu = false; ctl.notInterested(p) })
+                            DropdownMenuItem(text = { Text(tr("hide_creator")) }, onClick = { menu = false; ctl.hideCreator(p) })
+                        }
+                        listOf("Spam", "Harassment", "Inappropriate content").forEach { r ->
+                            DropdownMenuItem(text = { Text(trf("report_fmt", reasonLabel(r))) }, onClick = { menu = false; ctl.report(p, r) })
+                        }
                     }
                 }
             }
@@ -284,10 +338,11 @@ fun PostCard(p: Post, ctl: PostController, onComments: (Post) -> Unit) {
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 ReactionChip(Icons.Outlined.ChatBubbleOutline, p.commentCount.toString(), onMedia = true) { onComments(p) }
-                GlassIconButton(Icons.Outlined.Send, "Share", {
+                GlassIconButton(Icons.Outlined.Send, tr("a11y_share"), {
                     val send = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "${p.username} on Sociax: ${p.caption}")
                     }
+                    ctl.shared(p)
                     context.startActivity(Intent.createChooser(send, "Share"))
                 }, size = 34, onMedia = true)
                 Spacer(Modifier.weight(1f))

@@ -102,11 +102,12 @@ fun SettingsScreen(
     reduceMotion: Boolean, onReduceMotion: (Boolean) -> Unit,
     onBack: () -> Unit, onLogout: () -> Unit = {}, api: com.sociax.app.data.ApiClient? = null,
     me: com.sociax.app.data.Me? = null, onMeChanged: (com.sociax.app.data.Me) -> Unit = {},
-    onEditProfile: () -> Unit = {}, onBlocked: () -> Unit = {}, onSaved: () -> Unit = {}, onSavedShorts: () -> Unit = {}, onDeleted: () -> Unit = {}
+    onEditProfile: () -> Unit = {}, onBlocked: () -> Unit = {}, onSaved: () -> Unit = {}, onSavedShorts: () -> Unit = {}, onDeleted: () -> Unit = {},
+    lock: com.sociax.app.data.AppLock? = null, onChangeLock: () -> Unit = {}
 ) {
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, "Back", onBack); Spacer(Modifier.width(12.dp))
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack); Spacer(Modifier.width(12.dp))
             Text(tr("settings"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
         Section(tr("appearance")) {
@@ -136,9 +137,15 @@ fun SettingsScreen(
             Lang.values().forEach { l -> OptionRow(l.label, l == lang) { onLang(l) } }
         }
         PlansSection(api)
+        AiSettingsSection(api)                                    // Step 42
+        if (lock != null) AppLockSection(lock, onChangeLock)      // Step 32
+        DailyAlarmSection()                                       // Step 33
         PrivacySection(me, api, onMeChanged, onBlocked, onSaved, onSavedShorts)
+        ChatSettingsSection(me, api, onMeChanged)                 // Step 43
         NotificationsSection(me, api, onMeChanged)
         ShortVideoSettings()
+        PersonalizationSection(api)                               // Step 40
+        DataSettingsSection()                                     // Step 44
         Section(tr("account")) {
             if (me != null) NavRow(tr("edit_profile"), onEditProfile)
             GoogleAccountRow()

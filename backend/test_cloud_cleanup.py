@@ -6,8 +6,37 @@ from contextlib import closing
 
 os.environ["DEV_AUTH"] = "1"
 os.environ["SOCIAX_DB"] = os.path.join(tempfile.mkdtemp(), "t.db")
+import sys, types  # noqa: E402
+
+# A tiny fake `httpx` (works with the real package installed or not): the checks never touch the internet.
+httpx = types.ModuleType("httpx")
+httpx.RESULT, httpx.CALLS = {"result": "ok"}, []
+
+
+class _HTTPError(Exception):
+    pass
+
+
+class _Resp:
+    status_code = 200
+
+    def __init__(self, data):
+        self._d = data
+
+    def json(self):
+        return self._d
+
+
+def _post(url, **kw):
+    httpx.CALLS.append(url)
+    if isinstance(httpx.RESULT, Exception):
+        raise httpx.RESULT
+    return _Resp(httpx.RESULT)
+
+
+httpx.HTTPError, httpx.post = _HTTPError, _post
+sys.modules["httpx"] = httpx
 import main as m  # noqa: E402
-import httpx  # noqa: E402
 
 m.CLOUD_NAME, m.CLOUD_KEY, m.CLOUD_SECRET = "cloud", "key", "secret"
 m.kick_cloud_cleanup = lambda: None          # the tests run the worker by hand (no background thread)

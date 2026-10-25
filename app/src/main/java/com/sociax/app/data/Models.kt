@@ -64,6 +64,10 @@ data class ChatMessage(
     val held: Boolean = false     // Step 22: waiting until I follow the recipient ("Follow me first")
 )
 
+/** Step 43: one page of messages. [peerReadId] = id of the newest message of mine the OTHER person has seen in a one-to-one chat;
+ *  null = read receipts are not visible (group chat, or either of us switched them off). */
+data class MessagePage(val messages: List<ChatMessage>, val peerReadId: Long?)
+
 /** `followPrompt` = @username of the person who asked to be followed first (null = nothing to ask). */
 data class SendResult(val message: ChatMessage, val ai: String?, val followPrompt: String? = null)
 

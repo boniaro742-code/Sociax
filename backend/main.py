@@ -2,6 +2,8 @@
 Step 1: Firebase token verification, unique @username, onboarding stored server-side.
 All AI provider keys live HERE (env vars), never in the Android app."""
 import hashlib
+import hmac
+import logging
 import os
 import re
 import sqlite3
@@ -21,8 +23,12 @@ except ImportError:
 
 import chapa_client
 import ai_providers  # after load_dotenv so it sees XAI_API_KEY / GEMINI_API_KEY
+import ranker  # Step 39: For You scoring (pure code)
+import rank_engine  # Step 48: optional Go ranking engine (backend-go/); Python ranks by itself when it is off or fails
+import metrics  # Step 47: how long requests take / how often they fail (route patterns only)
 
-app = FastAPI(title="Sociax API", version="0.34.0")
+API_VERSION = "0.57.0"
+app = FastAPI(title="Sociax API", version=API_VERSION)
 
 # Cloudinary credentials: server-side only (env vars). The Android app never sees the secret.
 CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
@@ -30,12 +36,42 @@ CLOUD_KEY = os.getenv("CLOUDINARY_API_KEY")
 CLOUD_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 AVATAR_MAX_BYTES = 5 * 1024 * 1024
 POST_MAX_BYTES = 10 * 1024 * 1024
-# Technical safety cap for ONE short clip (the plan sets no per-file value; the 150 MB / 600 MB total quota still applies).
+# Technical safety cap for ONE short clip (the plan sets no per-file value; the DAILY media allowance still applies).
 SHORT_MAX_BYTES = 100 * 1024 * 1024
-SHORT_ALLOWED_SECONDS = (20, 25)       # the user picks 20 or 25 s; 25 s is the hard maximum
-DURATION_TOLERANCE = 0.5               # video containers round durations slightly; anything above 25.5 s is refused
+DURATION_RETRIES = 2                   # Step 36: Cloudinary may need a moment before it reports a new video's length
+DURATION_RETRY_WAIT = 1.0
+DURATION_TOLERANCE = 0.5               # video containers round durations slightly; anything above 60.5 s is refused
 
 _rate: dict = {}
+
+# Plan v3.5 section 25 / v3.9 section 37: measure API latency. Only the ROUTE PATTERN (never the real address, a username or a token)
+# and the time are logged, and only for slow requests; every answer carries X-Response-Time-ms.
+SLOW_REQUEST_MS = int(os.getenv("SLOW_REQUEST_MS", "1500"))
+_perf_log = __import__("logging").getLogger("sociax.perf")
+
+
+_metrics = metrics.Metrics()                       # Step 47
+_NOT_MEASURED = ("/health", "/health/config", "/admin/metrics")      # health checks and the metrics page itself would only add noise
+
+
+@app.middleware("http")
+async def _timing(request, call_next):
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        if route not in _NOT_MEASURED:
+            _metrics.record(request.method, route, 500, int((time.perf_counter() - t0) * 1000))
+        raise
+    ms = int((time.perf_counter() - t0) * 1000)
+    response.headers["X-Response-Time-ms"] = str(ms)
+    route = getattr(request.scope.get("route"), "path", "unmatched")
+    if route not in _NOT_MEASURED:
+        _metrics.record(request.method, route, response.status_code, ms)       # pattern only, never the real address
+    if ms >= SLOW_REQUEST_MS:
+        _perf_log.warning("slow request: %s %s took %d ms (status %s)", request.method, route, ms, response.status_code)
+    return response
 
 
 def rate_limit(uid: str, key: str, limit: int, window_s: int):
@@ -48,31 +84,35 @@ def rate_limit(uid: str, key: str, limit: int, window_s: int):
     _rate[(uid, key)] = hits
 
 # ---- Limit errors (plan section 8): the app shows "upgrade or wait" from the machine-readable `code` ----
-def media_full_error() -> HTTPException:
-    """Media quota (150 MB free / 600 MB App Pro) reached. The app offers the separate App Pro plan."""
-    return HTTPException(413, {"code": "media_full",
-                               "message": "Media storage is full. Free up space or upgrade to App Pro."})
+def media_full_error(reset_in_seconds: int = 0) -> HTTPException:
+    """DAILY media allowance (500 MB free / 1.5 GB Sociax Pro, plan v3.2) reached. The app offers Sociax Pro or waiting for the reset."""
+    return HTTPException(413, {"code": "media_full", "reset_in_seconds": int(reset_in_seconds),
+                               "message": f"Daily media limit reached. It resets in {int(reset_in_seconds) // 3600 + 1} h, "
+                                          "or upgrade to Sociax Pro."})
 
 
 def ai_limit_error(reset_in_seconds: int) -> HTTPException:
-    """Free AI allowance used up. The app offers AI Pro now, or waiting for the 48-hour reset."""
+    """Free AI allowance used up. The app offers Sociax Pro now, or waiting for the reset."""
     return HTTPException(429, {"code": "ai_limit", "reset_in_seconds": int(reset_in_seconds),
                                "message": f"Free AI limit reached. Resets in {reset_in_seconds // 3600 + 1} h."})
 
 
-# ---- Plan constants (v3.1) ----
-MAX_SHORT_SECONDS = 25
+# ---- Plan constants (v3.3: ONE paid plan, Sociax Pro, US $15 / month) ----
+MAX_SHORT_SECONDS = 60                 # plan v3.2: Short Video up to 1 minute (was 25 s)
 MIN_AGE = 15
-FREE_MEDIA_MB = 150
-APP_PRO_MEDIA_MB = 600
-AI_RESET_SECONDS = 48 * 3600
-AI_PRO_MULTIPLIER = 5
+MB = 1024 * 1024                       # ONE conversion everywhere: 1 MB = 1024 * 1024 bytes, 1 GB = 1024 MB
+FREE_MEDIA_MB = 500                    # Free: 500 MB per DAY (posts, photos, videos, files combined)
+PRO_MEDIA_MB = 1536                    # Sociax Pro: 1.5 GB per DAY = 1536 MB
+MEDIA_RESET_SECONDS = 24 * 3600        # a user's media day starts at their first upload and lasts 24 h
+AI_RESET_SECONDS = 48 * 3600           # Free AI allowance window (plan v3.2: keep only if the owner confirms; asked in the README)
+AI_PRO_MULTIPLIER = 7                  # Sociax Pro = 7x the Free AI allowance
 FREE_AI_REQUESTS = int(os.getenv("FREE_AI_REQUESTS", "10"))  # TEMPORARY testing value: the plan has NOT decided the free amount yet
 
 DB_PATH = os.getenv("SOCIAX_DB", "sociax.db")
 # DEV_AUTH=1 lets you test without Firebase using the token "dev-<anything>". NEVER enable in production.
 DEV_AUTH = os.getenv("DEV_AUTH") == "1"
 
+LANGUAGES = ("en", "fr", "zh", "ko", "ru")   # plan v3.5: exactly these five, English is the default
 USERNAME_RE = re.compile(r"^[a-z0-9_.]{3,20}$")
 SOURCES = {"TikTok", "YouTube", "Facebook", "Instagram", "Google Search", "Friend/Family", "AI Assistant", "Other"}
 
@@ -125,6 +165,10 @@ def init_db():
             con.execute("ALTER TABLE users ADD COLUMN default_audience TEXT NOT NULL DEFAULT 'public'")
         if "notif_off" not in cols:           # Step 27: comma-separated notification groups I switched OFF (empty = all on)
             con.execute("ALTER TABLE users ADD COLUMN notif_off TEXT NOT NULL DEFAULT ''")
+        if "language" not in cols:            # Step 37 (plan v3.5): the app language saved on the account ('' = never saved)
+            con.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+        if "read_receipts" not in cols:       # Step 43 (plan section 9: Chat > read receipts): 1 = I show "Seen" AND may see other people's
+            con.execute("ALTER TABLE users ADD COLUMN read_receipts INTEGER NOT NULL DEFAULT 1")
         mcols = {r["name"] for r in con.execute("PRAGMA table_info(messages)")}
         if mcols and "held" not in mcols:     # Step 22: 1 = waiting until the sender follows the recipient
             con.execute("ALTER TABLE messages ADD COLUMN held INTEGER NOT NULL DEFAULT 0")
@@ -199,6 +243,7 @@ def init_db():
                 conv_id INTEGER NOT NULL, uid TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'member',  -- owner | admin | member
                 last_read_id INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL,
+                receipt_read_id INTEGER NOT NULL DEFAULT 0,   -- Step 43: newest message SHOWN to the other person as read (0 = none)
                 PRIMARY KEY(conv_id, uid));
             CREATE INDEX IF NOT EXISTS conv_members_uid ON conv_members(uid);
             CREATE TABLE IF NOT EXISTS messages(
@@ -210,6 +255,9 @@ def init_db():
             CREATE INDEX IF NOT EXISTS messages_conv ON messages(conv_id, id);
             """
         )
+        ccols = {r["name"] for r in con.execute("PRAGMA table_info(conv_members)")}
+        if ccols and "receipt_read_id" not in ccols:   # Step 43: the newest message this person has SHOWN as read (0 = nothing shown)
+            con.execute("ALTER TABLE conv_members ADD COLUMN receipt_read_id INTEGER NOT NULL DEFAULT 0")
         con.execute(
             """CREATE TABLE IF NOT EXISTS media(
                 public_id TEXT PRIMARY KEY,
@@ -230,6 +278,17 @@ def init_db():
                 created_at INTEGER NOT NULL,
                 read INTEGER NOT NULL DEFAULT 0)""")
         con.execute("CREATE INDEX IF NOT EXISTS notifications_uid ON notifications(uid, id)")
+        # Step 30 (plan v3.2): DAILY media allowance. One row per user: the 24 h window and the bytes uploaded in it.
+        # Deleting a post never gives bytes back (it is an upload allowance, not storage), and old content is never
+        # deleted when the counter resets.
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS media_usage(
+                uid TEXT PRIMARY KEY, window_start INTEGER NOT NULL, used_bytes INTEGER NOT NULL DEFAULT 0)""")
+        # Step 32 (plan v3.3 section 3): one-time tokens that prove a FRESH Google sign-in, used to reset a forgotten app lock.
+        # Only a hash of the token is stored; it lives 5 minutes and works once.
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS lock_recovery(
+                token_hash TEXT PRIMARY KEY, uid TEXT NOT NULL, expires_at INTEGER NOT NULL)""")
         # Step 24: files waiting to be deleted on Cloudinary (see "Cloudinary clean-up queue" below)
         con.execute(
             """CREATE TABLE IF NOT EXISTS cloud_trash(
@@ -237,6 +296,59 @@ def init_db():
                 resource_type TEXT NOT NULL,          -- 'image' | 'video'
                 queued_at INTEGER NOT NULL,
                 tries INTEGER NOT NULL DEFAULT 0)"""
+        )
+        # Step 35 (plan v3.6/v3.9): every post / short has a moderation state. 'ok' = normal; anything else ('restricted',
+        # 'removed') hides it from everybody except its owner. A moderator tool can set it later; the feed already obeys it.
+        for table in ("posts", "shorts"):
+            if "moderation_state" not in {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN moderation_state TEXT NOT NULL DEFAULT 'ok'")
+        # Step 38 (plan v3.9 sections 31, 32, 35): a SMALL, documented set of interaction events (no message text, no private chat),
+        # and the viewer's own "do not show me this" choices. Events carry an idempotency key (a retry never counts twice) and a
+        # SERVER time (a time sent by the phone is never trusted). Old events are deleted after EVENT_RETENTION_DAYS.
+        con.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS interaction_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT NOT NULL,
+                content_type TEXT NOT NULL,            -- 'post' | 'short'
+                content_id INTEGER NOT NULL,
+                event TEXT NOT NULL,
+                value_ms INTEGER,                      -- watch time (ms) for watch / skip, visible time (ms) for impression
+                source TEXT NOT NULL DEFAULT 'app',    -- 'app' (sent by the phone) | 'server' (recorded by the server itself)
+                idem_key TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS interaction_idem ON interaction_events(uid, idem_key);
+            CREATE INDEX IF NOT EXISTS interaction_recent ON interaction_events(uid, content_type, content_id, id);
+            CREATE INDEX IF NOT EXISTS interaction_age ON interaction_events(created_at);
+            -- kind 'item' = "Not interested" (target 'post:12' / 'short:5'); kind 'creator' = "Hide creator" (target = creator uid)
+            CREATE TABLE IF NOT EXISTS rec_hidden(
+                uid TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, created_at INTEGER NOT NULL,
+                PRIMARY KEY(uid, kind, target));
+            -- Step 39: a ranked For You list is made ONCE and then paged from this snapshot, so refreshing / scrolling never
+            -- reorders or repeats items. It holds only item numbers; privacy is checked again every time a page is served.
+            CREATE TABLE IF NOT EXISTS feed_snapshots(
+                token TEXT PRIMARY KEY, uid TEXT NOT NULL, kind TEXT NOT NULL,   -- kind 'post' | 'short'
+                ids TEXT NOT NULL, created_at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS feed_snapshots_uid ON feed_snapshots(uid, created_at);
+            -- Step 41 (plan v3.8 section 28): COUNTED AdMob impressions of Free accounts. One row per impression; the key makes a
+            -- retry count once. `day` = the app-defined day number (see ad_day()). Nothing about the ad itself is stored.
+            CREATE TABLE IF NOT EXISTS ad_impressions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uid TEXT NOT NULL, day INTEGER NOT NULL, idem_key TEXT NOT NULL, created_at INTEGER NOT NULL);
+            CREATE UNIQUE INDEX IF NOT EXISTS ad_impressions_idem ON ad_impressions(uid, idem_key);
+            CREATE INDEX IF NOT EXISTS ad_impressions_day ON ad_impressions(uid, day);
+            -- Step 46 (plan v3.9 section 20: Notifications -> FCM push): the phones that agreed to push, and a small outbox of
+            -- pushes still to send. An outbox row holds ONLY: who, what kind, @actor, item number, count. Never message text.
+            CREATE TABLE IF NOT EXISTS push_tokens(
+                token TEXT PRIMARY KEY, uid TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS push_tokens_uid ON push_tokens(uid);
+            CREATE TABLE IF NOT EXISTS push_outbox(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT NOT NULL, type TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '',
+                ref INTEGER NOT NULL DEFAULT 0, count INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER NOT NULL DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS push_outbox_due ON push_outbox(locked_until, id);
+            """
         )
         con.commit()
 
@@ -251,17 +363,89 @@ def current_user(authorization: str = Header(None)) -> str:
     token = authorization[7:]
     if DEV_AUTH and token.startswith("dev-"):
         return token
+    # Step 51: tell "this server cannot check sign-ins" (503, the app waits / retries and shows the real cause) apart from "this
+    # token is bad" (401, the person signs in again). Before, a missing or wrong Firebase service-account file ALSO answered 401, so
+    # the phone looped between "sign-in expired" and the login screen with nothing useful in the log.
     try:
         _init_firebase()
+    except Exception as e:
+        logging.getLogger("sociax").error("firebase sign-in check unavailable: %s (is the secret file /etc/secrets/firebase-service-account.json set?)",
+                                          e.__class__.__name__)
+        raise HTTPException(503, "The server cannot check sign-ins right now")
+    try:
         from firebase_admin import auth
         return auth.verify_id_token(token)["uid"]
-    except Exception:
+    except Exception as e:
+        if e.__class__.__name__ in ("CertificateFetchError", "TransportError", "ConnectionError", "Timeout"):
+            logging.getLogger("sociax").warning("firebase could not fetch its public keys: %s", e.__class__.__name__)
+            raise HTTPException(503, "The server cannot check sign-ins right now")
         raise HTTPException(401, "Invalid or expired token")
 
 
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/admin/metrics")
+def admin_metrics(x_metrics_token: str | None = Header(default=None)):
+    """Step 47 (plan v3.9 section 37): the owner's baseline numbers. NOT for app users: it answers only to the secret in
+    METRICS_TOKEN (16+ characters, sent as header X-Metrics-Token); with no secret set, or a wrong one, it answers exactly like
+    a page that does not exist. Contains no user, id, query or content: route patterns, counts, milliseconds, queue sizes."""
+    rate_limit("-", "metrics", 60, 60)
+    expected = os.getenv("METRICS_TOKEN", "")
+    if len(expected) < 16 or not x_metrics_token or not hmac.compare_digest(x_metrics_token.encode(), expected.encode()):
+        raise HTTPException(404, "Not found")
+    out = _metrics.snapshot()
+    with closing(db()) as con:
+        backlog = con.execute("SELECT COUNT(*) AS n, MIN(created_at) AS oldest FROM push_outbox").fetchone()
+    out["push_backlog"] = {"waiting": backlog["n"], "oldest_s": (int(time.time()) - backlog["oldest"]) if backlog["oldest"] else 0}
+    out["version"] = API_VERSION
+    out["rank_engine"] = rank_engine.client.report()
+    out["note"] = ("Starts again at 0 when the server restarts. Percentiles use the newest %d timings of each route. "
+                   "This is a baseline, not proof of speed (plan section 37)." % metrics.WINDOW)
+    return out
+
+
+def config_report() -> dict:
+    """Plan v3.6 sections 3 + 4: confirms that the required settings EXIST without ever showing a value."""
+    creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    firebase = bool(creds) and os.path.isfile(creds)
+    cloud = bool(CLOUD_NAME and CLOUD_KEY and CLOUD_SECRET)
+    ai = ai_providers.configured()
+    payments = bool(os.getenv("CHAPA_SECRET_KEY"))
+    missing = []
+    if not firebase and not DEV_AUTH:
+        missing.append("GOOGLE_APPLICATION_CREDENTIALS (Firebase service account file)")
+    if not cloud:
+        missing += [n for n, v in (("CLOUDINARY_CLOUD_NAME", CLOUD_NAME), ("CLOUDINARY_API_KEY", CLOUD_KEY),
+                                   ("CLOUDINARY_API_SECRET", CLOUD_SECRET)) if not v]
+    if not any(ai.values()):
+        missing.append("XAI_API_KEY or GEMINI_API_KEY or ANTHROPIC_API_KEY (at least one AI provider)")
+    return {"ok": not missing, "version": API_VERSION, "database": True, "firebase": firebase, "cloudinary": cloud,
+            "ai": ai, "payments": payments, "missing": missing,
+            "rank_engine": rank_engine.client.report(),      # Step 48: booleans and counters only (never the address or the secret)
+            "dev_auth_enabled": DEV_AUTH}      # must be false in production
+
+
+@app.get("/health/config")
+def health_config():
+    """Deployment check (no login needed, so you can open it in a browser after every deploy). Booleans and the NAMES of
+    missing settings only: no value, key or path is ever returned."""
+    return config_report()
+
+
+@app.get("/auth/callback")
+def auth_callback(error: str | None = None):
+    """Plan v3.6 section 4: Google sign-in in the app uses Android Credential Manager + Firebase, so no backend page is needed.
+    This route exists only so that a redirect address pointed at the backend never ends in an unintended 404:
+    it shows a plain "return to the app" page for success and a plain page for a failure (the error text is never echoed)."""
+    from starlette.responses import HTMLResponse
+    if error:
+        body = "<h2>Sign-in did not finish</h2><p>Please close this page, return to the Sociax app and try again.</p>"
+        return HTMLResponse(f"<!doctype html><meta name=viewport content='width=device-width'><title>Sociax</title>{body}", status_code=400)
+    body = "<h2>Sociax</h2><p>You can close this page and return to the Sociax app.</p>"
+    return HTMLResponse(f"<!doctype html><meta name=viewport content='width=device-width'><title>Sociax</title>{body}")
 
 
 def avatar_url(public_id: str | None) -> str | None:
@@ -286,7 +470,9 @@ def profile_dict(row) -> dict:
         "is_private": bool(row["is_private"]),
         "who_can_message": row["who_can_message"], "default_audience": row["default_audience"],
         "follow_first": bool(row["follow_first"]), "show_last_seen": bool(row["show_last_seen"]),
+        "read_receipts": bool(row["read_receipts"]),      # Step 43
         "notifications": notif_prefs(row),
+        "language": row["language"] or None,       # Step 37: None = never saved on the account
         "followers": followers, "following": following, "posts": posts,
     }
 
@@ -307,7 +493,9 @@ class ProfileUpdate(BaseModel):
     default_audience: Literal["public", "followers"] | None = None
     follow_first: bool | None = None
     show_last_seen: bool | None = None
+    read_receipts: bool | None = None                  # Step 43: show "Seen" in one-to-one chats (and see other people's)
     notifications: dict[str, bool] | None = None      # Step 27: {"follows": false, ...} (only the groups given change)
+    language: Literal["en", "fr", "zh", "ko", "ru"] | None = None   # Step 37: the app language is kept on the account too
 
 
 @app.patch("/users/me")
@@ -348,6 +536,12 @@ def update_me(body: ProfileUpdate, uid: str = Depends(current_user)):
                 (off.discard if on else off.add)(k)
             con.execute("UPDATE users SET notif_off=? WHERE uid=?",
                         (",".join(c for c in NOTIF_CATEGORIES if c in off), uid))
+        if body.language is not None:
+            con.execute("UPDATE users SET language=? WHERE uid=?", (body.language, uid))
+        if body.read_receipts is not None:       # Step 43: switched off -> nothing stays recorded for the other side
+            con.execute("UPDATE users SET read_receipts=? WHERE uid=?", (int(body.read_receipts), uid))
+            if not body.read_receipts:
+                con.execute("UPDATE conv_members SET receipt_read_id=0 WHERE uid=?", (uid,))
         if body.show_last_seen is not None:
             con.execute("UPDATE users SET show_last_seen=? WHERE uid=?", (int(body.show_last_seen), uid))
             if not body.show_last_seen:
@@ -408,6 +602,131 @@ def notify(con, recipient: str, actor: str | None, ntype: str, ref: int = 0):
                 (recipient, actor, ntype, ref, count, int(time.time())))
     con.execute("DELETE FROM notifications WHERE uid=? AND id NOT IN "
                 "(SELECT id FROM notifications WHERE uid=? ORDER BY id DESC LIMIT ?)", (recipient, recipient, NOTIF_KEEP))
+    # Step 46: the SAME decision as above (category on, not blocked, not myself) also decides the push: nothing is pushed that
+    # would not be written in the bell list. Only when this person has a phone registered for push.
+    if con.execute("SELECT 1 FROM push_tokens WHERE uid=? LIMIT 1", (recipient,)).fetchone():
+        a = con.execute("SELECT username FROM users WHERE uid=?", (actor,)).fetchone() if actor else None
+        con.execute("INSERT INTO push_outbox(uid, type, actor, ref, count, created_at) VALUES (?,?,?,?,?,?)",
+                    (recipient, ntype, ("@" + a["username"]) if a else "", ref, count, int(time.time())))
+
+
+# ---------------- Push (Step 46): Firebase Cloud Messaging ----------------
+# The phone says "send me push" (POST /push/token) and says "stop" (POST /push/token/remove). notify() above queues a row in
+# push_outbox; a small background worker (push_deliver_once) sends it through FCM as a DATA message: type, @actor, item number,
+# count. The phone builds the visible text itself, in the person's language; the server never sends message text or captions.
+PUSH_MAX_TOKENS = 5          # phones per account (newest kept)
+PUSH_MAX_ATTEMPTS = 3
+PUSH_MAX_AGE = 600           # a push older than 10 minutes is dropped (a late "new message" is worse than none)
+
+
+class PushToken(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+
+
+def _push_token_ok(token: str) -> str:
+    token = (token or "").strip()
+    if not 20 <= len(token) <= 4096 or any(ord(c) < 33 or ord(c) == 127 for c in token):
+        raise HTTPException(422, "Invalid push token")
+    return token
+
+
+@app.post("/push/token")
+def push_register(body: PushToken, uid: str = Depends(current_user)):
+    """This phone wants push for this account. The token moves to this account if it was registered to another one (shared phone)."""
+    rate_limit(uid, "push_token", 30, 3600)
+    token = _push_token_ok(body.token)
+    now = int(time.time())
+    with closing(db()) as con:
+        if not user_row(con, uid):
+            raise HTTPException(404, "Account not found")
+        con.execute("INSERT INTO push_tokens(token, uid, created_at, updated_at) VALUES (?,?,?,?) "
+                    "ON CONFLICT(token) DO UPDATE SET uid=excluded.uid, updated_at=excluded.updated_at", (token, uid, now, now))
+        con.execute("DELETE FROM push_tokens WHERE uid=? AND token NOT IN "
+                    "(SELECT token FROM push_tokens WHERE uid=? ORDER BY updated_at DESC, rowid DESC LIMIT ?)",
+                    (uid, uid, PUSH_MAX_TOKENS))
+        con.commit()
+    return {"ok": True}
+
+
+@app.post("/push/token/remove")
+def push_remove(body: PushToken, uid: str = Depends(current_user)):
+    """Stop push on this phone (switch off, sign out). Only the account's OWN token can be removed."""
+    rate_limit(uid, "push_token", 30, 3600)
+    token = _push_token_ok(body.token)
+    with closing(db()) as con:
+        con.execute("DELETE FROM push_tokens WHERE token=? AND uid=?", (token, uid))
+        if not con.execute("SELECT 1 FROM push_tokens WHERE uid=? LIMIT 1", (uid,)).fetchone():
+            con.execute("DELETE FROM push_outbox WHERE uid=?", (uid,))           # no phone left: nothing to send
+        con.commit()
+    return {"ok": True}
+
+
+def _fcm_send(token: str, data: dict) -> str:
+    """The real sender. Returns 'ok' | 'invalid' (this token is dead: remove it) | 'retry'. Needs firebase-admin credentials
+    (the same GOOGLE_APPLICATION_CREDENTIALS as login). A data message with high priority, valid for one hour."""
+    try:
+        _init_firebase()
+        from firebase_admin import messaging
+        messaging.send(messaging.Message(token=token, data=data, android=messaging.AndroidConfig(priority="high", ttl=3600)))
+        return "ok"
+    except Exception as e:  # noqa: BLE001
+        return "invalid" if type(e).__name__ in ("UnregisteredError", "SenderIdMismatchError") else "retry"
+
+
+def push_deliver_once(sender, limit: int = 50, now: int | None = None) -> int:
+    """Sends the queued pushes once and returns how many phones accepted one. `sender(token, data)` -> 'ok' | 'invalid' | 'retry'.
+    A row is claimed first (locked for 60 s), so two workers never send the same push twice. A failed row is tried again
+    later (30 s, 60 s) up to PUSH_MAX_ATTEMPTS, and dropped after PUSH_MAX_AGE. Dead tokens are deleted."""
+    now = int(now if now is not None else time.time())
+    with closing(db()) as con:
+        con.execute("DELETE FROM push_outbox WHERE created_at < ?", (now - PUSH_MAX_AGE,))
+        rows = con.execute("SELECT * FROM push_outbox WHERE locked_until<=? ORDER BY id LIMIT ?", (now, limit)).fetchall()
+        claimed = []
+        for r in rows:
+            if con.execute("UPDATE push_outbox SET locked_until=?, attempts=attempts+1 WHERE id=? AND locked_until<=?",
+                           (now + 60, r["id"], now)).rowcount:
+                claimed.append(r)
+        con.commit()
+    sent = 0
+    for r in claimed:
+        with closing(db()) as con:
+            tokens = [t["token"] for t in con.execute("SELECT token FROM push_tokens WHERE uid=?", (r["uid"],))]
+        data = {"type": r["type"], "actor": r["actor"], "ref": str(r["ref"]), "count": str(r["count"])}
+        retry, dead = False, []
+        for t in tokens:
+            try:
+                res = sender(t, data)
+            except Exception:  # noqa: BLE001
+                res = "retry"
+            if res == "ok":
+                sent += 1
+            elif res == "invalid":
+                dead.append(t)
+            else:
+                retry = True
+        with closing(db()) as con:
+            for t in dead:
+                con.execute("DELETE FROM push_tokens WHERE token=?", (t,))
+            attempts = r["attempts"] + 1
+            if retry and attempts < PUSH_MAX_ATTEMPTS:
+                con.execute("UPDATE push_outbox SET locked_until=? WHERE id=?", (now + 30 * attempts, r["id"]))
+            else:
+                con.execute("DELETE FROM push_outbox WHERE id=?", (r["id"],))
+            con.commit()
+    return sent
+
+
+def _push_worker():
+    while True:
+        try:
+            push_deliver_once(_fcm_send)
+        except Exception:  # noqa: BLE001
+            logging.getLogger("sociax.push").exception("push delivery failed")
+        time.sleep(2)
+
+
+def start_push_worker():
+    threading.Thread(target=_push_worker, daemon=True, name="sociax-push").start()
 
 
 def _notify_owner(table: str, item_id: int, actor: str, ntype: str):
@@ -519,17 +838,46 @@ def get_presence(username: str, uid: str = Depends(current_user)):
 
 # ---------------- Cloudinary signed uploads ----------------
 def user_limit_mb(uid: str) -> int:
-    """Combined media allowance: 150 MB free, 600 MB while a VERIFIED Sociax App Pro payment is active (plan v3.1).
-    App Pro is separate from AI Pro: buying one never unlocks the other."""
-    return APP_PRO_MEDIA_MB if is_app_pro(uid) else FREE_MEDIA_MB
+    """DAILY media allowance (plan v3.2): 500 MB free, 1.5 GB (1536 MB) while a VERIFIED Sociax Pro payment is active."""
+    return PRO_MEDIA_MB if is_pro(uid) else FREE_MEDIA_MB
 
 
-def used_bytes(con, uid: str, exclude_kind: str | None = None) -> int:
-    if exclude_kind:
-        r = con.execute("SELECT COALESCE(SUM(bytes),0) FROM media WHERE uid=? AND kind!=?", (uid, exclude_kind))
+def used_bytes(con, uid: str) -> int:
+    """Everything the user still has stored (information only: the quota is the DAILY counter below)."""
+    return int(con.execute("SELECT COALESCE(SUM(bytes),0) FROM media WHERE uid=?", (uid,)).fetchone()[0])
+
+
+def media_state(con, uid: str) -> dict:
+    """Today's media counter, computed on the SERVER (never from numbers sent by the app).
+    The day is a 24 h window that starts with the first upload; when it ends the counter starts again at 0."""
+    now = int(time.time())
+    limit = user_limit_mb(uid) * MB
+    r = con.execute("SELECT window_start, used_bytes FROM media_usage WHERE uid=?", (uid,)).fetchone()
+    if not r or now - r["window_start"] >= MEDIA_RESET_SECONDS:
+        return {"used": 0, "limit": limit, "reset_at": None, "reset_in_seconds": 0, "fresh": True}
+    reset_at = r["window_start"] + MEDIA_RESET_SECONDS
+    return {"used": r["used_bytes"], "limit": limit, "reset_at": reset_at, "reset_in_seconds": reset_at - now, "fresh": False}
+
+
+def media_check(con, uid: str, add_bytes: int) -> dict:
+    """Raises the 413 "media_full" answer when today's allowance cannot take [add_bytes] more."""
+    st = media_state(con, uid)
+    if st["used"] + add_bytes > st["limit"]:
+        raise media_full_error(st["reset_in_seconds"])
+    return st
+
+
+def media_take(con, uid: str, add_bytes: int):
+    """Count an accepted upload against today's allowance. Call it in the SAME transaction as the INSERT INTO media
+    (the caller commits). Call media_check first."""
+    now = int(time.time())
+    r = con.execute("SELECT window_start FROM media_usage WHERE uid=?", (uid,)).fetchone()
+    if not r or now - r["window_start"] >= MEDIA_RESET_SECONDS:
+        con.execute("INSERT INTO media_usage(uid, window_start, used_bytes) VALUES (?,?,?) "
+                    "ON CONFLICT(uid) DO UPDATE SET window_start=excluded.window_start, used_bytes=excluded.used_bytes",
+                    (uid, now, add_bytes))
     else:
-        r = con.execute("SELECT COALESCE(SUM(bytes),0) FROM media WHERE uid=?", (uid,))
-    return int(r.fetchone()[0])
+        con.execute("UPDATE media_usage SET used_bytes=used_bytes+? WHERE uid=?", (add_bytes, uid))
 
 
 def cloud_sign(params: dict) -> str:
@@ -630,10 +978,7 @@ def sign_upload(body: SignRequest, uid: str = Depends(current_user)):
         what = "Video" if body.purpose == "short" else "Photo"
         raise HTTPException(413, f"{what} must be under {max_bytes // (1024 * 1024)} MB")
     with closing(db()) as con:
-        # an avatar replaces the old one, so the old avatar does not count against the quota
-        exclude = "avatar" if body.purpose == "avatar" else None
-        if used_bytes(con, uid, exclude) + body.size_bytes > user_limit_mb(uid) * 1024 * 1024:
-            raise media_full_error()
+        media_check(con, uid, body.size_bytes)     # today's allowance (plan v3.2); the real size is checked again after the upload
     ts = int(time.time())
     public_id = f"users/{uid}/{body.purpose}_{ts}"
     formats = "mp4,mov,webm,3gp,mkv" if body.purpose == "short" else "jpg,jpeg,png,webp"
@@ -672,8 +1017,8 @@ def confirm_avatar(body: AvatarConfirm, uid: str = Depends(current_user)):
         if not row:
             raise HTTPException(404, "Finish onboarding first")
         old = row["avatar_public_id"]
-        if used_bytes(con, uid, "avatar") + size > user_limit_mb(uid) * 1024 * 1024:
-            raise media_full_error()
+        media_check(con, uid, size)
+        media_take(con, uid, size)
         if old:
             con.execute("DELETE FROM media WHERE public_id=?", (old,))
             trash_media(con, old, "avatar")
@@ -693,6 +1038,7 @@ class Onboarding(BaseModel):
     username: str
     age: int
     source: str | None = None
+    language: str | None = None        # Step 37: the language chosen on the opening screen (anything else is ignored)
 
 
 @app.post("/users/onboard")
@@ -708,8 +1054,9 @@ def onboard(body: Onboarding, uid: str = Depends(current_user)):
             raise HTTPException(409, "Already onboarded")
         try:
             con.execute(
-                "INSERT INTO users(uid, username, display_name, age, source, created_at) VALUES (?,?,?,?,?,?)",
-                (uid, username, body.display_name.strip(), body.age, source, int(time.time())),
+                "INSERT INTO users(uid, username, display_name, age, source, created_at, language) VALUES (?,?,?,?,?,?,?)",
+                (uid, username, body.display_name.strip(), body.age, source, int(time.time()),
+                 body.language if body.language in LANGUAGES else ""),
             )
             con.commit()
         except sqlite3.IntegrityError:
@@ -726,28 +1073,31 @@ class ShortMeta(BaseModel):
 @app.post("/media/validate-short")
 def validate_short(meta: ShortMeta, uid: str = Depends(current_user)):
     if meta.duration_seconds > MAX_SHORT_SECONDS:
-        raise HTTPException(422, "Clip longer than 25s: trim it first")
+        raise HTTPException(422, f"Clip longer than {MAX_SHORT_SECONDS}s: trim it first")
     if not meta.mime.startswith("video/"):
         raise HTTPException(415, "Unsupported file type")
     if meta.size_mb * 1024 * 1024 > SHORT_MAX_BYTES:
         raise HTTPException(413, f"Video must be under {SHORT_MAX_BYTES // (1024 * 1024)} MB")
     with closing(db()) as con:
-        if used_bytes(con, uid) + meta.size_mb * 1024 * 1024 > user_limit_mb(uid) * 1024 * 1024:
-            raise media_full_error()
+        media_check(con, uid, int(meta.size_mb * MB))
     return {"ok": True}  # advisory only: the real check happens again in POST /shorts on the uploaded file
 
 
 @app.get("/quota/media")
 def media_quota(uid: str = Depends(current_user)):
+    """Today's media allowance (plan v3.2): used / remaining / exact reset time, plus what is stored. All counted here."""
     with closing(db()) as con:
-        used = used_bytes(con, uid)
-    return {"limit_mb": user_limit_mb(uid), "pro_limit_mb": APP_PRO_MEDIA_MB,
-            "used_mb": round(used / (1024 * 1024), 2),
-            "app_pro": is_app_pro(uid), "app_pro_expires_at": app_pro_expires_at(uid) or None}
+        st = media_state(con, uid)
+        stored = used_bytes(con, uid)
+    return {"period": "day", "limit_mb": st["limit"] // MB, "free_limit_mb": FREE_MEDIA_MB, "pro_limit_mb": PRO_MEDIA_MB,
+            "used_mb": round(st["used"] / MB, 2), "remaining_mb": round(max(st["limit"] - st["used"], 0) / MB, 2),
+            "reset_at": st["reset_at"], "reset_in_seconds": st["reset_in_seconds"],
+            "stored_mb": round(stored / MB, 2),
+            "pro": is_pro(uid), "pro_expires_at": pro_expires_at(uid) or None}
 
 
 def ai_limit(uid: str) -> int:
-    return FREE_AI_REQUESTS * (AI_PRO_MULTIPLIER if is_ai_pro(uid) else 1)  # Pro only after a VERIFIED Chapa payment
+    return FREE_AI_REQUESTS * (AI_PRO_MULTIPLIER if is_pro(uid) else 1)  # Pro (7x) only after a VERIFIED Chapa payment
 
 
 def ai_state(con, uid: str) -> dict:
@@ -784,7 +1134,13 @@ def ai_quota(uid: str = Depends(current_user)):
         st = ai_state(con, uid)
     return {"reset_in_seconds": st["reset_in_seconds"], "pro_multiplier": AI_PRO_MULTIPLIER,
             "free_requests": st["limit"] or None, "used": st["used"], "remaining": max(st["limit"] - st["used"], 0),
-            "ai_pro": is_ai_pro(uid), "ai_pro_expires_at": ai_pro_expires_at(uid) or None}
+            "pro": is_pro(uid), "pro_expires_at": pro_expires_at(uid) or None}
+
+
+@app.get("/quota")
+def quota_all(uid: str = Depends(current_user)):
+    """Plan v3.9 section 38: one answer with today's media and AI allowance. Counted on the server; nothing here is sent by the app."""
+    return {"media": media_quota(uid), "ai": ai_quota(uid)}
 
 
 @app.get("/ai/status")
@@ -801,14 +1157,20 @@ def ai_ask(body: AiAsk, uid: str = Depends(current_user)):
     """Private question to Sociax AI (Grok leads, Gemini assists). Nothing from chats is sent."""
     rate_limit(uid, "ai", 10, 60)
     if not any(ai_providers.configured().values()):
-        raise HTTPException(503, "AI is not connected yet")
+        # Plan v3.6 section 3: a SAFE, structured answer. Nothing about keys or settings is revealed to the user.
+        raise HTTPException(503, {"code": "ai_not_configured", "retryable": False,
+                                  "message": "Sociax AI is not available yet. Please try again later."})
     with closing(db()) as con:
         ai_take(con, uid)
         try:
             answer, provider = ai_providers.ask(body.prompt)
-        except ai_providers.AiUnavailable:
-            ai_refund(con, uid)
-            raise HTTPException(502, "AI could not answer right now. Please try again.")
+        except ai_providers.AiUnavailable as e:
+            ai_refund(con, uid)           # a failed answer never costs the user part of the free allowance
+            why = set(e.reasons.values())
+            busy = bool(why) and why <= {"http_429", "timeout"}
+            raise HTTPException(502, {"code": "ai_unavailable", "retryable": True,
+                                      "message": ("Sociax AI is busy right now. Please try again in a minute." if busy
+                                                  else "Sociax AI could not answer right now. Please try again.")})
         st = ai_state(con, uid)
     return {"answer": answer, "provider": provider, "used": st["used"], "limit": st["limit"],
             "reset_in_seconds": st["reset_in_seconds"]}
@@ -822,7 +1184,20 @@ def ai_ask(body: AiAsk, uid: str = Depends(current_user)):
 FOLLOW_ACCEPTED = "EXISTS(SELECT 1 FROM follows f WHERE f.follower=:me AND f.followee=p.uid AND f.status='accepted')"
 NOT_BLOCKED = ("NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker=:me AND b.blocked=p.uid) "
                "OR (b.blocker=p.uid AND b.blocked=:me))")
-VISIBLE = (f"(p.uid=:me OR ({NOT_BLOCKED} AND ((p.audience='public' AND u.is_private=0) OR {FOLLOW_ACCEPTED})))")
+# Plan v3.7: Public = every signed-in account (follower or not) can see it, unless the account is private / blocked / the item is
+# restricted by moderation. Followers-only = accepted followers only. The owner always sees their own items.
+VISIBLE = (f"(p.uid=:me OR (p.moderation_state='ok' AND {NOT_BLOCKED} "
+           f"AND ((p.audience='public' AND u.is_private=0) OR {FOLLOW_ACCEPTED})))")
+
+# Step 38 (plan v3.9 section 31.1): content the viewer chose to hide ("Not interested" / "Hide creator") never enters
+# THEIR For You / Following feed. It is an extra filter on top of VISIBLE, never a replacement for it.
+def _not_hidden(kind: str) -> str:
+    return ("NOT EXISTS(SELECT 1 FROM rec_hidden h WHERE h.uid=:me AND "
+            f"((h.kind='creator' AND h.target=p.uid) OR (h.kind='item' AND h.target='{kind}:'||p.id)))")
+
+
+NOT_HIDDEN_POST = _not_hidden("post")
+NOT_HIDDEN_SHORT = _not_hidden("short")
 
 REACTION_KINDS = ("wow", "haha", "sad")   # 😮 😂 😢   (the heart is the existing like)
 _REACT_COLS = ",\n".join(
@@ -853,6 +1228,7 @@ def post_dict(r, me: str) -> dict:
         "id": r["id"], "username": "@" + r["username"], "display_name": r["display_name"],
         "avatar_url": avatar_url(r["avatar_public_id"]), "caption": r["caption"],
         "image_url": image_url(r["media_public_id"]), "audience": r["audience"],
+        "type": "photo", "visibility": r["audience"], "moderation_state": r["moderation_state"],
         "created_at": r["created_at"], "like_count": r["like_count"], "comment_count": r["comment_count"],
         "liked": bool(r["liked"]), "saved": bool(r["saved"]),
         "follow_status": "self" if r["uid"] == me else (r["follow_status"] or "none"),
@@ -906,16 +1282,25 @@ def create_post(body: NewPost, uid: str = Depends(current_user)):
     rate_limit(uid, "post", 20, 3600)
     if not body.public_id.startswith(f"users/{uid}/post_") or ".." in body.public_id:
         raise HTTPException(403, "Not your upload")
+    # Step 35 (plan v3.6 section 1): a retry of the SAME upload never creates a second post and never counts the quota twice.
+    # If the first answer got lost on a weak network, the app asks again and simply receives the post that already exists.
+    with closing(db()) as con:
+        again = con.execute(f"{POST_SELECT} WHERE p.media_public_id=:pid AND p.uid=:me", {"me": uid, "pid": body.public_id}).fetchone()
+    if again:
+        return post_dict(again, uid)
     size = asset_bytes(body.public_id)
     if size <= 0 or size > POST_MAX_BYTES:
+        with closing(db()) as con:      # a refused photo is never kept on Cloudinary
+            trash_media(con, body.public_id, "post"); con.commit()
+        kick_cloud_cleanup()
         raise HTTPException(413, "Photo must be under 10 MB")
     with closing(db()) as con:
         if not con.execute("SELECT 1 FROM users WHERE uid=?", (uid,)).fetchone():
             raise HTTPException(404, "Finish onboarding first")
         if con.execute("SELECT 1 FROM media WHERE public_id=?", (body.public_id,)).fetchone():
             raise HTTPException(409, "Already posted")
-        if used_bytes(con, uid) + size > user_limit_mb(uid) * 1024 * 1024:
-            raise media_full_error()
+        media_check(con, uid, size)
+        media_take(con, uid, size)
         con.execute("INSERT INTO media(public_id, uid, kind, bytes, created_at) VALUES (?,?,?,?,?)",
                     (body.public_id, uid, "post", size, int(time.time())))
         cur = con.execute("INSERT INTO posts(uid, caption, media_public_id, audience, created_at) VALUES (?,?,?,?,?)",
@@ -934,6 +1319,7 @@ def delete_post(post_id: int, uid: str = Depends(current_user)):
         for t in ("likes", "bookmarks", "comments", "post_reactions"):
             con.execute(f"DELETE FROM {t} WHERE post_id=?", (post_id,))
         con.execute("DELETE FROM posts WHERE id=?", (post_id,))
+        forget_content(con, "post", post_id)
         con.execute("DELETE FROM media WHERE public_id=?", (row["media_public_id"],))  # frees quota
         trash_media(con, row["media_public_id"], "post")
         con.commit()
@@ -945,7 +1331,7 @@ def delete_post(post_id: int, uid: str = Depends(current_user)):
 def feed(tab: Literal["for_you", "following"] = "for_you", before: int | None = None,
          limit: int = 20, uid: str = Depends(current_user)):
     limit = max(1, min(limit, 50))
-    where = [VISIBLE]
+    where = [VISIBLE, NOT_HIDDEN_POST]
     if tab == "following":
         where.append(f"(p.uid=:me OR {FOLLOW_ACCEPTED})")
     if before:
@@ -953,14 +1339,23 @@ def feed(tab: Literal["for_you", "following"] = "for_you", before: int | None = 
     sql = f"{POST_SELECT} WHERE {' AND '.join(where)} ORDER BY p.id DESC LIMIT :limit"
     with closing(db()) as con:
         rows = con.execute(sql, {"me": uid, "before": before, "limit": limit}).fetchall()
-    return {"posts": [post_dict(r, uid) for r in rows]}
+    posts = [post_dict(r, uid) for r in rows]
+    return {"posts": posts, "next_before": posts[-1]["id"] if len(posts) == limit else None}
+
+
+# Step 38 (plan v3.9 section 38): the two feeds also have their own named addresses. Same code, same rules.
+@app.get("/feed/following")
+def feed_following(before: int | None = None, limit: int = 20, uid: str = Depends(current_user)):
+    return feed("following", before, limit, uid)
 
 
 def _toggle(table: str, post_id: int, uid: str, on: bool):
     with closing(db()) as con:
-        visible_post(con, post_id, uid)
+        row = visible_post(con, post_id, uid)
         if on:
-            con.execute(f"INSERT OR IGNORE INTO {table}(post_id, uid) VALUES (?,?)", (post_id, uid))
+            cur = con.execute(f"INSERT OR IGNORE INTO {table}(post_id, uid) VALUES (?,?)", (post_id, uid))
+            if cur.rowcount and table in ("likes", "bookmarks"):
+                record_server_event(con, uid, "post", post_id, "like" if table == "likes" else "save", row["uid"])
         else:
             con.execute(f"DELETE FROM {table} WHERE post_id=? AND uid=?", (post_id, uid))
         con.commit()
@@ -1032,9 +1427,10 @@ def list_comments(post_id: int, uid: str = Depends(current_user)):
 def add_comment(post_id: int, body: NewComment, uid: str = Depends(current_user)):
     rate_limit(uid, "comment", 30, 600)
     with closing(db()) as con:
-        visible_post(con, post_id, uid)
+        row = visible_post(con, post_id, uid)
         con.execute("INSERT INTO comments(post_id, uid, text, created_at) VALUES (?,?,?,?)",
                     (post_id, uid, body.text.strip(), int(time.time())))
+        record_server_event(con, uid, "post", post_id, "comment", row["uid"])
         con.commit()
     _notify_owner("posts", post_id, uid, "post_comment")
     return {"ok": True}
@@ -1048,9 +1444,10 @@ class Report(BaseModel):
 def report_post(post_id: int, body: Report, uid: str = Depends(current_user)):
     rate_limit(uid, "report", 20, 3600)
     with closing(db()) as con:
-        visible_post(con, post_id, uid)
+        row = visible_post(con, post_id, uid)
         con.execute("INSERT INTO reports(reporter, target_type, target_id, reason, created_at) VALUES (?,?,?,?,?)",
                     (uid, "post", str(post_id), body.reason.strip(), int(time.time())))
+        record_server_event(con, uid, "post", post_id, "report", row["uid"])
         con.commit()
     return {"ok": True}
 
@@ -1085,8 +1482,8 @@ def _release(con, conv_id: int, sender: str, recipient: str):
         return
     con.execute("UPDATE messages SET held=0 WHERE conv_id=? AND uid=? AND held=1", (conv_id, sender))
     notify(con, recipient, sender, "message", conv_id)          # Step 27: the waiting messages now appear
-    con.execute("UPDATE conv_members SET last_read_id=MIN(last_read_id, ?) WHERE conv_id=? AND uid=?",
-                (first - 1, conv_id, recipient))
+    con.execute("UPDATE conv_members SET last_read_id=MIN(last_read_id, ?), receipt_read_id=MIN(receipt_read_id, ?) "
+                "WHERE conv_id=? AND uid=?", (first - 1, first - 1, conv_id, recipient))   # Step 43: released = not "Seen" either
 
 
 def release_held(con, sender: str, recipient: str):
@@ -1253,39 +1650,80 @@ def user_posts(username: str, before: int | None = None, limit: int = 30, uid: s
 
 
 # ---------------- search ----------------
+SEARCH_PAGE = 20          # Step 45 (plan sections 19, 33): results per list per page
+SEARCH_MAX_OFFSET = 200   # nobody pages deeper than this: it bounds the cost of one request
+SEARCH_MAX_CHARS = 50
+
+
+def _like_escape(text: str) -> str:
+    """Make `text` safe inside a LIKE pattern (used with ESCAPE '\\'): % and _ are literal characters, never wildcards.
+    (Before Step 45 they were deleted, so searching the username "a_b" really searched "ab".)"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _next_offset(rows: list, offset: int):
+    """rows were fetched with LIMIT page+1: more exists when there is an extra row (and we are not past the depth limit)."""
+    nxt = offset + SEARCH_PAGE
+    return nxt if len(rows) > SEARCH_PAGE and nxt < SEARCH_MAX_OFFSET else None
+
+
 @app.get("/search")
-def search(q: str, uid: str = Depends(current_user)):
+def search(q: str, uid: str = Depends(current_user), type: str | None = None, offset: int = 0):
     """People by @username/display name (unless blocked) + PUBLIC posts + PUBLIC short videos (caption match).
-    Private accounts, followers-only content and blocked people never appear. Groups are never searchable (plan section 6)."""
+    Private accounts, followers-only content and blocked people never appear. Groups are never searchable (plan section 6).
+    Step 45 (plan sections 19, 33, 40): input is validated (50 characters at most, no control characters), every list is paged
+    (`type` = users | posts | shorts and `offset` from the `next` value of the previous answer; nothing deeper than 200),
+    People are ranked exact @username, then username starts with, then name starts with, then contains; posts and videos
+    put captions where a WORD starts with the search text before captions that only contain it inside a word, newest first."""
     rate_limit(uid, "search", 60, 60)
-    q = q.strip().lstrip("@").lower()
+    if type not in (None, "users", "posts", "shorts"):
+        raise HTTPException(422, "Unknown search list")
+    raw = (q or "").strip()
+    if len(raw) > SEARCH_MAX_CHARS:
+        raise HTTPException(422, f"Search text is too long ({SEARCH_MAX_CHARS} characters at most)")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise HTTPException(422, "Search text has characters that are not allowed")
+    offset = max(0, min(int(offset), SEARCH_MAX_OFFSET))
+    q = raw.lstrip("@").lower()
+    empty = {"users": [], "posts": [], "shorts": [], "next": {"users": None, "posts": None, "shorts": None}}
     if len(q) < 2:
-        return {"users": [], "posts": [], "shorts": []}
-    like_q = "%" + q.replace("%", "").replace("_", "") + "%"
+        return empty
+    esc = _like_escape(q)
+    args = {"q": "%" + esc + "%", "pre": esc + "%", "word": "% " + esc + "%", "exact": q,
+            "lim": SEARCH_PAGE + 1, "off": offset}
+    out = dict(empty, next=dict(empty["next"]))
     with closing(db()) as con:
-        urows = con.execute(
-            """SELECT u.uid, u.username, u.display_name, u.avatar_public_id, u.is_private,
-                 (SELECT f.status FROM follows f WHERE f.follower=:me AND f.followee=u.uid) AS follow_status
-               FROM users u WHERE (u.username LIKE :q OR LOWER(u.display_name) LIKE :q) AND u.uid!=:me
-                 AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker=:me AND b.blocked=u.uid)
-                   OR (b.blocker=u.uid AND b.blocked=:me))
-               ORDER BY (u.username=:exact) DESC, u.username LIMIT 20""",
-            {"me": uid, "q": like_q, "exact": q}).fetchall()
-        prows = con.execute(
-            f"""{POST_SELECT} WHERE p.audience='public' AND u.is_private=0 AND {NOT_BLOCKED}
-                AND LOWER(p.caption) LIKE :q ORDER BY p.id DESC LIMIT 20""",
-            {"me": uid, "q": like_q}).fetchall()
-        srows = con.execute(
-            f"""{SHORT_SELECT} WHERE p.audience='public' AND u.is_private=0 AND {NOT_BLOCKED}
-                AND LOWER(p.caption) LIKE :q ORDER BY p.id DESC LIMIT 20""",
-            {"me": uid, "q": like_q}).fetchall()
-    return {
-        "users": [{"username": "@" + r["username"], "display_name": r["display_name"],
-                   "avatar_url": avatar_url(r["avatar_public_id"]), "is_private": bool(r["is_private"]),
-                   "follow_status": r["follow_status"] or "none"} for r in urows],
-        "posts": [post_dict(r, uid) for r in prows],
-        "shorts": [short_dict(r, uid) for r in srows],
-    }
+        if type in (None, "users"):
+            urows = con.execute(
+                """SELECT u.uid, u.username, u.display_name, u.avatar_public_id, u.is_private,
+                     (SELECT f.status FROM follows f WHERE f.follower=:me AND f.followee=u.uid) AS follow_status
+                   FROM users u WHERE (u.username LIKE :q ESCAPE '\\' OR LOWER(u.display_name) LIKE :q ESCAPE '\\') AND u.uid!=:me
+                     AND NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker=:me AND b.blocked=u.uid)
+                       OR (b.blocker=u.uid AND b.blocked=:me))
+                   ORDER BY CASE WHEN u.username=:exact THEN 0
+                                 WHEN u.username LIKE :pre ESCAPE '\\' THEN 1
+                                 WHEN LOWER(u.display_name) LIKE :pre ESCAPE '\\' OR LOWER(u.display_name) LIKE :word ESCAPE '\\' THEN 2
+                                 ELSE 3 END, u.username
+                   LIMIT :lim OFFSET :off""", dict(args, me=uid)).fetchall()
+            out["next"]["users"] = _next_offset(urows, offset)
+            out["users"] = [{"username": "@" + r["username"], "display_name": r["display_name"],
+                             "avatar_url": avatar_url(r["avatar_public_id"]), "is_private": bool(r["is_private"]),
+                             "follow_status": r["follow_status"] or "none"} for r in urows[:SEARCH_PAGE]]
+        caption_rank = ("ORDER BY CASE WHEN LOWER(p.caption) LIKE :pre ESCAPE '\\' OR LOWER(p.caption) LIKE :word ESCAPE '\\' "
+                        "THEN 0 ELSE 1 END, p.id DESC LIMIT :lim OFFSET :off")
+        if type in (None, "posts"):
+            prows = con.execute(
+                f"""{POST_SELECT} WHERE p.audience='public' AND u.is_private=0 AND {NOT_BLOCKED}
+                    AND LOWER(p.caption) LIKE :q ESCAPE '\\' {caption_rank}""", dict(args, me=uid)).fetchall()
+            out["next"]["posts"] = _next_offset(prows, offset)
+            out["posts"] = [post_dict(r, uid) for r in prows[:SEARCH_PAGE]]
+        if type in (None, "shorts"):
+            srows = con.execute(
+                f"""{SHORT_SELECT} WHERE p.audience='public' AND u.is_private=0 AND {NOT_BLOCKED}
+                    AND LOWER(p.caption) LIKE :q ESCAPE '\\' {caption_rank}""", dict(args, me=uid)).fetchall()
+            out["next"]["shorts"] = _next_offset(srows, offset)
+            out["shorts"] = [short_dict(r, uid) for r in srows[:SEARCH_PAGE]]
+    return out
 
 
 # =====================================================================
@@ -1331,6 +1769,7 @@ def short_dict(r, me: str) -> dict:
         "video_url": video_url(r["media_public_id"]), "video_url_low": video_url(r["media_public_id"], low=True),
         "poster_url": poster_url(r["media_public_id"]), "duration": r["duration"],
         "audience": r["audience"], "comments_enabled": bool(r["comments_enabled"]),
+        "type": "video", "visibility": r["audience"], "moderation_state": r["moderation_state"],
         "created_at": r["created_at"], "like_count": r["like_count"], "comment_count": r["comment_count"],
         "liked": bool(r["liked"]), "saved": bool(r["saved"]), "save_count": r["save_count"],
         "follow_status": "self" if r["uid"] == me else (r["follow_status"] or "none"),
@@ -1378,7 +1817,7 @@ class NewShort(BaseModel):
     caption: str = Field(default="", max_length=2200)
     audience: Literal["public", "followers"] = "public"
     comments_enabled: bool = True
-    chosen_seconds: Literal[20, 25] = 25      # the 20 s / 25 s choice made by the user
+    chosen_seconds: int = Field(default=60, ge=1, le=60)   # plan v3.2: the maximum is 60 s (older apps send 20 / 25: still accepted)
 
 
 @app.post("/shorts")
@@ -1386,7 +1825,16 @@ def create_short(body: NewShort, uid: str = Depends(current_user)):
     rate_limit(uid, "short", 10, 3600)
     if not body.public_id.startswith(f"users/{uid}/short_") or ".." in body.public_id:
         raise HTTPException(403, "Not your upload")
+    with closing(db()) as con:      # Step 35: the same retry rule as photos (never a duplicate clip, never counted twice)
+        again = con.execute(f"{SHORT_SELECT} WHERE p.media_public_id=:pid AND p.uid=:me", {"me": uid, "pid": body.public_id}).fetchone()
+    if again:
+        return short_dict(again, uid)
     info = video_info(body.public_id)
+    for _ in range(DURATION_RETRIES):
+        if float(info.get("duration") or 0) > 0:
+            break
+        time.sleep(DURATION_RETRY_WAIT)
+        info = video_info(body.public_id)
     size = int(info.get("bytes", 0))
     duration = float(info.get("duration") or 0)
     fmt = str(info.get("format", "")).lower()
@@ -1407,9 +1855,12 @@ def create_short(body: NewShort, uid: str = Depends(current_user)):
             raise HTTPException(404, "Finish onboarding first")
         if con.execute("SELECT 1 FROM media WHERE public_id=?", (body.public_id,)).fetchone():
             raise HTTPException(409, "Already published")
-        if used_bytes(con, uid) + size > user_limit_mb(uid) * 1024 * 1024:
+        try:
+            media_check(con, uid, size)
+        except HTTPException:
             destroy_video(body.public_id)
-            raise media_full_error()
+            raise
+        media_take(con, uid, size)
         con.execute("INSERT INTO media(public_id, uid, kind, bytes, created_at) VALUES (?,?,?,?,?)",
                     (body.public_id, uid, "short", size, int(time.time())))
         cur = con.execute(
@@ -1424,13 +1875,19 @@ def create_short(body: NewShort, uid: str = Depends(current_user)):
 @app.get("/shorts/feed")
 def shorts_feed(before: int | None = None, limit: int = 10, uid: str = Depends(current_user)):
     limit = max(1, min(limit, 30))
-    where = [VISIBLE]
+    where = [VISIBLE, NOT_HIDDEN_SHORT]
     if before:
         where.append("p.id < :before")
     sql = f"{SHORT_SELECT} WHERE {' AND '.join(where)} ORDER BY p.id DESC LIMIT :limit"
     with closing(db()) as con:
         rows = con.execute(sql, {"me": uid, "before": before, "limit": limit}).fetchall()
     return {"shorts": [short_dict(r, uid) for r in rows]}
+
+
+@app.get("/shorts/for-you")
+def shorts_for_you(cursor: str | None = None, limit: int = 10, uid: str = Depends(current_user)):
+    """Ranked For You (short videos), same rules as /feed/for-you. Must stay ABOVE /shorts/{short_id}."""
+    return _ranked_feed("short", cursor, limit, uid)
 
 
 @app.get("/shorts/saved")
@@ -1447,6 +1904,13 @@ def saved_shorts(before: int | None = None, limit: int = 30, uid: str = Depends(
     return {"shorts": [short_dict(r, uid) for r in rows]}
 
 
+@app.get("/shorts/{short_id}")
+def get_short(short_id: int, uid: str = Depends(current_user)):
+    """Step 35: open ONE short video. Same VISIBLE rule as the feed; hidden and missing give the same 404."""
+    with closing(db()) as con:
+        return short_dict(visible_short(con, short_id, uid), uid)
+
+
 @app.delete("/shorts/{short_id}")
 def delete_short(short_id: int, uid: str = Depends(current_user)):
     with closing(db()) as con:
@@ -1458,6 +1922,7 @@ def delete_short(short_id: int, uid: str = Depends(current_user)):
         con.execute("DELETE FROM short_reactions WHERE short_id=?", (short_id,))
         con.execute("DELETE FROM short_bookmarks WHERE short_id=?", (short_id,))
         con.execute("DELETE FROM shorts WHERE id=?", (short_id,))
+        forget_content(con, "short", short_id)
         con.execute("DELETE FROM media WHERE public_id=?", (row["media_public_id"],))   # frees quota
         trash_media(con, row["media_public_id"], "short")
         con.commit()
@@ -1468,8 +1933,10 @@ def delete_short(short_id: int, uid: str = Depends(current_user)):
 @app.post("/shorts/{short_id}/like")
 def like_short(short_id: int, uid: str = Depends(current_user)):
     with closing(db()) as con:
-        visible_short(con, short_id, uid)
-        con.execute("INSERT OR IGNORE INTO short_likes(short_id, uid) VALUES (?,?)", (short_id, uid))
+        row = visible_short(con, short_id, uid)
+        cur = con.execute("INSERT OR IGNORE INTO short_likes(short_id, uid) VALUES (?,?)", (short_id, uid))
+        if cur.rowcount:
+            record_server_event(con, uid, "short", short_id, "like", row["uid"])
         con.commit()
     _notify_owner("shorts", short_id, uid, "short_like")
     return {"ok": True}
@@ -1507,8 +1974,10 @@ def unreact_short(short_id: int, kind: Literal["wow", "haha", "sad"], uid: str =
 @app.post("/shorts/{short_id}/bookmark")
 def bookmark_short(short_id: int, uid: str = Depends(current_user)):
     with closing(db()) as con:
-        visible_short(con, short_id, uid)
-        con.execute("INSERT OR IGNORE INTO short_bookmarks(short_id, uid) VALUES (?,?)", (short_id, uid))
+        row = visible_short(con, short_id, uid)
+        cur = con.execute("INSERT OR IGNORE INTO short_bookmarks(short_id, uid) VALUES (?,?)", (short_id, uid))
+        if cur.rowcount:
+            record_server_event(con, uid, "short", short_id, "save", row["uid"])
         con.commit()
     return {"ok": True}
 
@@ -1549,6 +2018,7 @@ def add_short_comment(short_id: int, body: NewComment, uid: str = Depends(curren
             raise HTTPException(403, "Comments are turned off for this video")
         con.execute("INSERT INTO short_comments(short_id, uid, text, created_at) VALUES (?,?,?,?)",
                     (short_id, uid, body.text.strip(), int(time.time())))
+        record_server_event(con, uid, "short", short_id, "comment", row["uid"])
         con.commit()
     _notify_owner("shorts", short_id, uid, "short_comment")
     return {"ok": True}
@@ -1558,11 +2028,355 @@ def add_short_comment(short_id: int, body: NewComment, uid: str = Depends(curren
 def report_short(short_id: int, body: Report, uid: str = Depends(current_user)):
     rate_limit(uid, "report", 20, 3600)
     with closing(db()) as con:
-        visible_short(con, short_id, uid)
+        row = visible_short(con, short_id, uid)
         con.execute("INSERT INTO reports(reporter, target_type, target_id, reason, created_at) VALUES (?,?,?,?,?)",
                     (uid, "short", str(short_id), body.reason.strip(), int(time.time())))
+        record_server_event(con, uid, "short", short_id, "report", row["uid"])
         con.commit()
     return {"ok": True}
+
+
+# =====================================================================
+# Step 38 (plan v3.9 sections 31, 32, 35, 38): discovery engine FOUNDATION, "Phase B".
+# - POST /events/interaction : the phone reports what it SAW (impression / watch / complete / skip / share).
+#   Like, save, comment and report are NEVER accepted from the phone: the server records them itself when the real
+#   action happens (see record_server_event), so a phone cannot fake them.
+# - POST /feedback/recommendation : "Not interested", "Hide creator", "Reset recommendation history".
+# - Hidden items never enter that person's feeds (NOT_HIDDEN_*), on top of VISIBLE (privacy always comes first).
+# Nothing here ranks yet (that is the next step); it only collects clean, minimal, deletable signals.
+# =====================================================================
+EVENT_SCHEMA_VERSION = 1
+EVENT_RETENTION_DAYS = int(os.getenv("EVENT_RETENTION_DAYS", "90"))   # old events are deleted (plan v3.9 section 35: minimise retention)
+EVENTS_PER_MINUTE = 240                 # abuse limit per account
+CLIENT_EVENTS = ("impression", "watch", "complete", "skip", "share")   # what a phone may report
+SERVER_EVENTS = ("like", "save", "comment", "report")                  # only the server records these
+VIDEO_ONLY_EVENTS = ("watch", "complete")
+IMPRESSION_MIN_VISIBLE_MS = 1000        # an item counts as SEEN only after 1 s really on screen (pre-loaded items do not count)
+WATCH_SLACK_MS = 2000                   # clock / buffering slack
+WATCH_MAX_LOOPS = 10                    # one event cannot claim more than 10 plays of a short clip
+MAX_VALUE_MS = 3_600_000
+_IDEM_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,64}$")
+_last_event_purge = 0.0
+
+
+class InteractionEvent(BaseModel):
+    content_type: Literal["post", "short"]
+    content_id: int = Field(ge=1)
+    event: Literal["impression", "watch", "complete", "skip", "share"]
+    idem_key: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")   # the phone makes a new one per event and reuses it on retry
+    value_ms: int | None = Field(default=None, ge=0, le=MAX_VALUE_MS)
+    version: int = Field(default=EVENT_SCHEMA_VERSION, ge=1, le=100)
+
+
+def _check_event(body) -> None:
+    """The same rules again in code (not only in the model), so every entrance is checked."""
+    if body.event not in CLIENT_EVENTS:
+        raise HTTPException(422, "Unknown event")
+    if body.content_type not in ("post", "short"):
+        raise HTTPException(422, "Unknown content type")
+    if not isinstance(body.content_id, int) or body.content_id < 1:
+        raise HTTPException(422, "Bad content id")
+    if not isinstance(body.idem_key, str) or not _IDEM_RE.match(body.idem_key):
+        raise HTTPException(422, "Bad idempotency key")
+    if body.value_ms is not None and (not isinstance(body.value_ms, int) or body.value_ms < 0 or body.value_ms > MAX_VALUE_MS):
+        raise HTTPException(422, "Bad value")
+    if body.event in VIDEO_ONLY_EVENTS and body.content_type != "short":
+        raise HTTPException(422, "This event is only for short videos")
+
+
+def record_server_event(con, uid: str, ctype: str, cid: int, event: str, owner: str | None = None) -> None:
+    """Called inside the real like / save / comment / report action. The first time per person and item only (a repeat has the
+    same key and is ignored). Never raises: a problem here must never break the action itself."""
+    if owner is not None and owner == uid:
+        return    # my own content is not a signal about my taste
+    try:
+        con.execute(
+            "INSERT OR IGNORE INTO interaction_events(uid, content_type, content_id, event, value_ms, source, idem_key, version, created_at) "
+            "VALUES (?,?,?,?,NULL,'server',?,?,?)",
+            (uid, ctype, cid, event, f"srv:{event}:{ctype}:{cid}", EVENT_SCHEMA_VERSION, int(time.time())))
+    except sqlite3.Error:
+        pass
+
+
+def purge_old_events(con, force: bool = False) -> None:
+    """At most once an hour: delete events older than EVENT_RETENTION_DAYS."""
+    global _last_event_purge
+    now = time.time()
+    if not force and now - _last_event_purge < 3600:
+        return
+    _last_event_purge = now
+    con.execute("DELETE FROM interaction_events WHERE created_at < ?", (int(now) - EVENT_RETENTION_DAYS * 86400,))
+
+
+def forget_content(con, ctype: str, cid: int) -> None:
+    """A deleted post / short: its events and every "not interested" mark on it go too."""
+    con.execute("DELETE FROM interaction_events WHERE content_type=? AND content_id=?", (ctype, cid))
+    con.execute("DELETE FROM rec_hidden WHERE kind='item' AND target=?", (f"{ctype}:{cid}",))
+
+
+@app.post("/events/interaction")
+def record_interaction(body: InteractionEvent, uid: str = Depends(current_user)):
+    rate_limit(uid, "events", EVENTS_PER_MINUTE, 60)
+    _check_event(body)
+    with closing(db()) as con:
+        # Only items this person is ALLOWED to see can produce an event; hidden and missing answer the same 404.
+        row = visible_short(con, body.content_id, uid) if body.content_type == "short" else visible_post(con, body.content_id, uid)
+        if row["uid"] == uid:
+            return {"ok": True, "recorded": False, "reason": "own_content"}
+        v = body.value_ms
+        if body.event == "impression" and (v is None or v < IMPRESSION_MIN_VISIBLE_MS):
+            return {"ok": True, "recorded": False, "reason": "below_threshold"}
+        if body.event == "watch" and not v:
+            return {"ok": True, "recorded": False, "reason": "empty_watch"}
+        if body.content_type == "short" and v is not None and body.event in ("watch", "complete", "skip"):
+            if v > row["duration"] * 1000 * WATCH_MAX_LOOPS + WATCH_SLACK_MS:
+                return {"ok": True, "recorded": False, "reason": "impossible"}    # ignored, not an error: the phone must not retry it
+        purge_old_events(con)
+        cur = con.execute(
+            "INSERT OR IGNORE INTO interaction_events(uid, content_type, content_id, event, value_ms, source, idem_key, version, created_at) "
+            "VALUES (?,?,?,?,?,'app',?,?,?)",
+            (uid, body.content_type, body.content_id, body.event, v, body.idem_key, EVENT_SCHEMA_VERSION, int(time.time())))
+        con.commit()
+    if not cur.rowcount:
+        return {"ok": True, "recorded": False, "duplicate": True}      # a retry of the same event: counted once
+    return {"ok": True, "recorded": True}
+
+
+class RecFeedback(BaseModel):
+    action: Literal["not_interested", "hide_creator", "reset"]
+    content_type: Literal["post", "short"] | None = None
+    content_id: int | None = Field(default=None, ge=1)
+
+
+@app.post("/feedback/recommendation")
+def recommendation_feedback(body: RecFeedback, uid: str = Depends(current_user)):
+    """Plan v3.9 section 31.2 controls. 'reset' wipes what the engine learned about ME (events), my "Not interested" marks and
+    my hidden creators, so it is also the way to undo a hide. 'Refresh feed' needs no endpoint: it is simply a new GET."""
+    if body.action not in ("not_interested", "hide_creator", "reset"):
+        raise HTTPException(422, "Unknown action")
+    rate_limit(uid, "rec_feedback", 60, 3600)
+    now = int(time.time())
+    with closing(db()) as con:
+        if body.action == "reset":
+            con.execute("DELETE FROM interaction_events WHERE uid=?", (uid,))
+            con.execute("DELETE FROM rec_hidden WHERE uid=?", (uid,))
+            con.execute("DELETE FROM feed_snapshots WHERE uid=?", (uid,))
+            con.commit()
+            return {"ok": True, "action": "reset"}
+        if body.content_type not in ("post", "short") or not body.content_id:
+            raise HTTPException(422, "content_type and content_id are required")
+        row = visible_short(con, body.content_id, uid) if body.content_type == "short" else visible_post(con, body.content_id, uid)
+        if row["uid"] == uid:
+            raise HTTPException(422, "Your own content cannot be hidden from your feed")
+        if body.action == "not_interested":
+            con.execute("INSERT OR IGNORE INTO rec_hidden(uid, kind, target, created_at) VALUES (?, 'item', ?, ?)",
+                        (uid, f"{body.content_type}:{body.content_id}", now))
+        else:
+            con.execute("INSERT OR IGNORE INTO rec_hidden(uid, kind, target, created_at) VALUES (?, 'creator', ?, ?)",
+                        (uid, row["uid"], now))
+        con.commit()
+    return {"ok": True, "action": body.action}
+
+
+@app.get("/feedback/recommendation")
+def recommendation_state(uid: str = Depends(current_user)):
+    """For Settings: how much personalization the engine holds about me (counts only), so I can see it and reset it."""
+    with closing(db()) as con:
+        events = con.execute("SELECT COUNT(*) FROM interaction_events WHERE uid=?", (uid,)).fetchone()[0]
+        items = con.execute("SELECT COUNT(*) FROM rec_hidden WHERE uid=? AND kind='item'", (uid,)).fetchone()[0]
+        creators = con.execute("SELECT COUNT(*) FROM rec_hidden WHERE uid=? AND kind='creator'", (uid,)).fetchone()[0]
+    return {"events": events, "not_interested": items, "hidden_creators": creators, "retention_days": EVENT_RETENTION_DAYS,
+            "schema_version": EVENT_SCHEMA_VERSION}
+
+
+# =====================================================================
+# Step 39 (plan v3.9 sections 31, 38, 41; roadmap Phase C): the first For You ranker.
+# Order of work for every request (privacy ALWAYS first):
+#   1. SQL picks the newest RANK_POOL items this person may see (VISIBLE + not hidden + not reported by me).
+#   2. ranker.py scores and orders them (weights from RANK_WEIGHTS, default = the plan's 30/20/15/15/10/10).
+#   3. The order is stored as a snapshot; pages are read from it (no repeats, no reshuffling when you scroll or when new posts arrive).
+#   4. Every page re-checks VISIBLE + hidden when it is served: something blocked / hidden / deleted after the snapshot is dropped.
+#   5. If ranking fails for any reason the answer is the plain newest-first feed (`ranked: false`), never an error and never extra content.
+# GET /feed (newest first) and GET /feed/following are unchanged. Nothing here reads message text or private chats.
+# =====================================================================
+RANK_WEIGHTS = ranker.parse_weights(os.getenv("RANK_WEIGHTS"))
+RANK_POOL = 300                       # only the newest 300 eligible items are ranked (a measured limit can raise it later)
+SNAPSHOT_TTL_S = 30 * 60              # a ranked list is paged for 30 minutes; "Refresh" simply asks again without a cursor
+SNAPSHOT_MAX_ITEMS = 150
+SNAPSHOTS_PER_USER = 5
+INTEREST_WINDOW_S = 30 * 86400        # the viewer's own recent actions (the last 30 days) shape "interest"
+_rank_log = __import__("logging").getLogger("sociax.rank")
+
+_RANK_KINDS = {
+    "post": dict(table="posts", select=POST_SELECT, hidden=NOT_HIDDEN_POST, likes=("likes", "post_id"),
+                 saves=("bookmarks", "post_id"), comments=("comments", "post_id"), as_dict=post_dict,
+                 key="posts", default_limit=20, max_limit=50),
+    "short": dict(table="shorts", select=SHORT_SELECT, hidden=NOT_HIDDEN_SHORT, likes=("short_likes", "short_id"),
+                  saves=("short_bookmarks", "short_id"), comments=("short_comments", "short_id"), as_dict=short_dict,
+                  key="shorts", default_limit=10, max_limit=30),
+}
+
+
+def _in_list(ids):
+    return ",".join(f":i{k}" for k in range(len(ids))), {f"i{k}": v for k, v in enumerate(ids)}
+
+
+def rank_candidates(con, uid: str, ctype: str) -> list:
+    """Returns item ids, best first (at most SNAPSHOT_MAX_ITEMS). Only items the viewer is allowed to see are ever scored."""
+    cfg = _RANK_KINDS[ctype]
+    table, now = cfg["table"], int(time.time())
+    dur = ", p.duration AS duration" if ctype == "short" else ""
+    reported = "NOT EXISTS(SELECT 1 FROM reports r WHERE r.reporter=:me AND r.target_type=:ct AND r.target_id=CAST(p.id AS TEXT))"
+    rows = con.execute(
+        f"SELECT p.id, p.uid, p.created_at{dur} FROM {table} p JOIN users u ON u.uid=p.uid "
+        f"WHERE {VISIBLE} AND {cfg['hidden']} AND {reported} ORDER BY p.id DESC LIMIT :n",
+        {"me": uid, "ct": ctype, "n": RANK_POOL}).fetchall()
+    if not rows:
+        return []
+    ids = [r["id"] for r in rows]
+    ph, idp = _in_list(ids)
+    base = {"ct": ctype, **idp}
+
+    def counts(sql, extra=None):
+        return {r["cid"]: r["n"] for r in con.execute(sql, {**base, **(extra or {})}).fetchall()}
+
+    # engagement: each person counted ONCE per item, never the creator themselves (anti-spam: repeated taps change nothing)
+    like_t, like_c = cfg["likes"]; save_t, save_c = cfg["saves"]; com_t, com_c = cfg["comments"]
+    likes = counts(f"SELECT x.{like_c} AS cid, COUNT(DISTINCT x.uid) AS n FROM {like_t} x JOIN {table} p ON p.id=x.{like_c} "
+                   f"WHERE x.{like_c} IN ({ph}) AND x.uid != p.uid GROUP BY x.{like_c}")
+    saves = counts(f"SELECT x.{save_c} AS cid, COUNT(DISTINCT x.uid) AS n FROM {save_t} x JOIN {table} p ON p.id=x.{save_c} "
+                   f"WHERE x.{save_c} IN ({ph}) AND x.uid != p.uid GROUP BY x.{save_c}")
+    comments = counts(f"SELECT x.{com_c} AS cid, COUNT(DISTINCT x.uid) AS n FROM {com_t} x JOIN {table} p ON p.id=x.{com_c} "
+                      f"WHERE x.{com_c} IN ({ph}) AND x.uid != p.uid GROUP BY x.{com_c}")
+    shares = counts(f"SELECT e.content_id AS cid, COUNT(DISTINCT e.uid) AS n FROM interaction_events e JOIN {table} p ON p.id=e.content_id "
+                    f"WHERE e.content_type=:ct AND e.event='share' AND e.content_id IN ({ph}) AND e.uid != p.uid GROUP BY e.content_id")
+
+    # watch quality (short videos only): per viewer the BEST share of the clip watched, averaged over different viewers
+    watch_avg, watch_n = {}, {}
+    if ctype == "short":
+        best = {}
+        for r in con.execute(
+                f"SELECT e.uid AS u, e.content_id AS cid, e.event AS ev, e.value_ms AS v, p.duration AS d FROM interaction_events e "
+                f"JOIN shorts p ON p.id=e.content_id WHERE e.content_type='short' AND e.event IN ('watch','complete','skip') "
+                f"AND e.content_id IN ({ph}) AND e.uid != p.uid", base).fetchall():
+            ratio = ranker.watch_ratio(r["ev"], r["v"], r["d"])
+            if ratio is not None:
+                key = (r["cid"], r["u"])
+                best[key] = max(best.get(key, 0.0), ratio)
+        per = {}
+        for (cid, _u), ratio in best.items():
+            per.setdefault(cid, []).append(ratio)
+        for cid, lst in per.items():
+            watch_avg[cid], watch_n[cid] = sum(lst) / len(lst), len(lst)
+
+    # the viewer's own interest in each creator (by CREATOR: posts have no topic tags yet, and none are invented)
+    interest_pts = {}
+    for ct, tb in (("post", "posts"), ("short", "shorts")):
+        for r in con.execute(
+                f"SELECT p.uid AS creator, e.event AS ev, COUNT(*) AS n FROM interaction_events e JOIN {tb} p ON p.id=e.content_id "
+                f"WHERE e.uid=:me AND e.content_type=:ct AND e.created_at>=:since AND e.event IN ('like','save','comment','share','complete') "
+                f"GROUP BY p.uid, e.event", {"me": uid, "ct": ct, "since": now - INTEREST_WINDOW_S}).fetchall():
+            interest_pts[r["creator"]] = interest_pts.get(r["creator"], 0.0) + ranker.INTEREST_POINTS[r["ev"]] * r["n"]
+
+    # repeats: what the viewer already saw / skipped
+    seen = {r["cid"]: r["t"] for r in con.execute(
+        f"SELECT content_id AS cid, MAX(created_at) AS t FROM interaction_events WHERE uid=:me AND content_type=:ct "
+        f"AND event='impression' AND content_id IN ({ph}) GROUP BY content_id", {**base, "me": uid}).fetchall()}
+    skipped = {r["cid"] for r in con.execute(
+        f"SELECT DISTINCT content_id AS cid FROM interaction_events WHERE uid=:me AND content_type=:ct "
+        f"AND event='skip' AND content_id IN ({ph})", {**base, "me": uid}).fetchall()}
+
+    # quality: different people who reported it (a signal, not proof; the creator's own report does not count)
+    reporters = {int(r["cid"]): r["n"] for r in con.execute(
+        f"SELECT r.target_id AS cid, COUNT(DISTINCT r.reporter) AS n FROM reports r JOIN {table} p ON CAST(p.id AS TEXT)=r.target_id "
+        f"WHERE r.target_type=:ct AND r.reporter != p.uid AND p.id IN ({ph}) GROUP BY r.target_id", base).fetchall()}
+
+    followed = {r["followee"] for r in con.execute(
+        "SELECT followee FROM follows WHERE follower=? AND status='accepted'", (uid,)).fetchall()}
+
+    items = []
+    for r in rows:
+        cid = r["id"]
+        items.append(ranker.Item(
+            id=cid, creator=r["uid"], age_seconds=now - r["created_at"],
+            interest_points=interest_pts.get(r["uid"], 0.0), watch_avg=watch_avg.get(cid), watch_viewers=watch_n.get(cid, 0),
+            engage_points=likes.get(cid, 0) + 2 * saves.get(cid, 0) + 2 * comments.get(cid, 0) + 2 * shares.get(cid, 0),
+            followed=r["uid"] in followed, seen_age_seconds=(now - seen[cid]) if cid in seen else None,
+            skipped=cid in skipped, reporters=reporters.get(cid, 0)))
+    # Step 48: the Go engine (when RANK_ENGINE_URL is set) puts the SAME already-filtered candidates in order; it can only reorder them,
+    # and any problem (off, slow, wrong answer) means Python ranks them here, exactly as before.
+    return rank_engine.client.order(items, RANK_WEIGHTS, limit=SNAPSHOT_MAX_ITEMS)
+
+
+def _save_snapshot(con, uid: str, ctype: str, ids: list) -> str:
+    import secrets as _sec
+    now = int(time.time())
+    con.execute("DELETE FROM feed_snapshots WHERE created_at < ?", (now - SNAPSHOT_TTL_S,))
+    token = _sec.token_urlsafe(9)
+    con.execute("INSERT INTO feed_snapshots(token, uid, kind, ids, created_at) VALUES (?,?,?,?,?)",
+                (token, uid, ctype, ",".join(str(i) for i in ids), now))
+    con.execute("DELETE FROM feed_snapshots WHERE uid=? AND token NOT IN "
+                "(SELECT token FROM feed_snapshots WHERE uid=? ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                (uid, uid, SNAPSHOTS_PER_USER))
+    return token
+
+
+def _cursor_expired() -> HTTPException:
+    return HTTPException(410, {"code": "cursor_expired", "message": "This list is out of date. Pull to refresh."})
+
+
+def _parse_cursor(cursor: str):
+    token, _, off = cursor.rpartition(".")
+    if not token or not off.isdigit() or len(token) > 40 or int(off) > 100000:
+        raise _cursor_expired()
+    return token, int(off)
+
+
+def _snapshot_page(con, uid: str, ctype: str, token: str, offset: int, limit: int):
+    """One page of a stored ranking. Visibility and hiding are checked AGAIN here, so nothing that became forbidden after the
+    snapshot was made (blocked, went private, hidden, removed, deleted) is ever served. Another person's token = expired."""
+    cfg = _RANK_KINDS[ctype]
+    snap = con.execute("SELECT ids, kind, created_at FROM feed_snapshots WHERE token=? AND uid=?", (token, uid)).fetchone()
+    if not snap or snap["kind"] != ctype or int(time.time()) - snap["created_at"] > SNAPSHOT_TTL_S:
+        raise _cursor_expired()
+    ids = [int(x) for x in snap["ids"].split(",") if x]
+    chunk = ids[offset:offset + limit]
+    out = []
+    if chunk:
+        ph, idp = _in_list(chunk)
+        by_id = {r["id"]: r for r in con.execute(
+            f"{cfg['select']} WHERE p.id IN ({ph}) AND {VISIBLE} AND {cfg['hidden']}", {"me": uid, **idp}).fetchall()}
+        out = [cfg["as_dict"](by_id[i], uid) for i in chunk if i in by_id]
+    nxt = offset + limit if offset + limit < len(ids) else None
+    return out, nxt
+
+
+def _ranked_feed(ctype: str, cursor: str | None, limit: int, uid: str) -> dict:
+    cfg = _RANK_KINDS[ctype]
+    limit = max(1, min(limit, cfg["max_limit"]))
+    rate_limit(uid, "ranked_feed", 120, 60)
+    meta = {"ranked": True, "ranker": ranker.VERSION}
+    if cursor:
+        token, offset = _parse_cursor(cursor)
+        with closing(db()) as con:
+            items, nxt = _snapshot_page(con, uid, ctype, token, offset, limit)
+        return {cfg["key"]: items, "next_cursor": f"{token}.{nxt}" if nxt is not None else None, **meta}
+    try:
+        with closing(db()) as con:
+            token = _save_snapshot(con, uid, ctype, rank_candidates(con, uid, ctype))
+            con.commit()
+            items, nxt = _snapshot_page(con, uid, ctype, token, 0, limit)
+        return {cfg["key"]: items, "next_cursor": f"{token}.{nxt}" if nxt is not None else None, **meta}
+    except Exception as e:   # noqa: BLE001  plan v3.9 section 41: if ranking fails, fall back to the eligible newest-first feed
+        _rank_log.warning("ranking failed (%s): serving the newest-first feed", type(e).__name__)
+    base = feed("for_you", None, limit, uid) if ctype == "post" else shorts_feed(None, limit, uid)
+    return {**base, "next_cursor": None, "ranked": False, "ranker": None, "fallback": "chronological"}
+
+
+@app.get("/feed/for-you")
+def feed_for_you(cursor: str | None = None, limit: int = 20, uid: str = Depends(current_user)):
+    """Ranked For You (photos). First call: no cursor. Next pages: pass `next_cursor` back. Refresh = call again without a cursor."""
+    return _ranked_feed("post", cursor, limit, uid)
 
 
 # =====================================================================
@@ -1657,6 +2471,23 @@ def message_dict(con, r, me: str) -> dict:
     return d
 
 
+def peer_read_id(con, c, me: str):
+    """Step 43 (plan section 9: Chat > read receipts). The id of the newest message of MINE that the other person has SEEN, for a
+    one-to-one chat only. None = receipts are not visible: a group chat, or either of us switched read receipts off (reciprocal,
+    exactly like Online / last seen: if I hide mine I see nobody's). What is "shown" is kept in `receipt_read_id`, which is only
+    written while the reader's switch is ON, so switching it on later never reveals what was read while it was off."""
+    if c["kind"] != "dm":
+        return None
+    peer_uid = dm_peer_uid(con, c["id"], me)
+    if not peer_uid or is_blocked(con, me, peer_uid):
+        return None
+    mine, theirs = user_row(con, me), user_row(con, peer_uid)
+    if not mine or not theirs or not mine["read_receipts"] or not theirs["read_receipts"]:
+        return None
+    row = con.execute("SELECT receipt_read_id FROM conv_members WHERE conv_id=? AND uid=?", (c["id"], peer_uid)).fetchone()
+    return int(row["receipt_read_id"]) if row else None
+
+
 def conv_summary(con, c, me: str) -> dict:
     last = con.execute(f"SELECT * FROM messages WHERE conv_id=? AND {SEEN} ORDER BY id DESC LIMIT 1", (c["id"], me)).fetchone()
     my = con.execute("SELECT last_read_id, role FROM conv_members WHERE conv_id=? AND uid=?", (c["id"], me)).fetchone()
@@ -1734,7 +2565,8 @@ def get_messages(conv_id: int, after: int | None = None, limit: int = 50, uid: s
             rows = list(reversed(con.execute(f"SELECT * FROM messages WHERE conv_id=? AND {SEEN} ORDER BY id DESC LIMIT ?",
                                              (conv_id, uid, limit)).fetchall()))
         msgs = [message_dict(con, r, uid) for r in rows]
-        return {"messages": msgs, "conversation": conv_summary(con, c, uid)}
+        return {"messages": msgs, "conversation": conv_summary(con, c, uid),
+                "peer_read_id": peer_read_id(con, c, uid)}          # Step 43: null = receipts not visible
 
 
 class NewMessage(BaseModel):
@@ -1789,9 +2621,14 @@ def send_message(conv_id: int, body: NewMessage, uid: str = Depends(current_user
 @app.post("/chats/{conv_id}/read")
 def mark_read(conv_id: int, uid: str = Depends(current_user)):
     with closing(db()) as con:
-        open_conv(con, conv_id, uid)
+        c, _ = open_conv(con, conv_id, uid)
         last = con.execute(f"SELECT COALESCE(MAX(id),0) FROM messages WHERE conv_id=? AND {SEEN}", (conv_id, uid)).fetchone()[0]
         con.execute("UPDATE conv_members SET last_read_id=? WHERE conv_id=? AND uid=?", (last, conv_id, uid))
+        # Step 43: what the OTHER person may see as "Seen". Only in a one-to-one chat, only while MY read-receipts switch is on,
+        # and never backwards. (last_read_id above still moves, it only drives my own unread badge.)
+        mine = user_row(con, uid)
+        if c["kind"] == "dm" and mine and mine["read_receipts"]:
+            con.execute("UPDATE conv_members SET receipt_read_id=MAX(receipt_read_id, ?) WHERE conv_id=? AND uid=?", (last, conv_id, uid))
         con.execute("UPDATE notifications SET read=1 WHERE uid=? AND ref=? AND type IN ('message','ai_reply')",
                     (uid, conv_id))                  # Step 27: opening the chat clears its notifications
         con.commit()
@@ -2071,8 +2908,8 @@ def create_story(body: NewStory, uid: str = Depends(current_user)):
             raise HTTPException(404, "Finish onboarding first")
         if con.execute("SELECT 1 FROM media WHERE public_id=?", (body.public_id,)).fetchone():
             raise HTTPException(409, "Already posted")
-        if used_bytes(con, uid) + size > user_limit_mb(uid) * 1024 * 1024:
-            raise media_full_error()
+        media_check(con, uid, size)
+        media_take(con, uid, size)
         con.execute("INSERT INTO media(public_id, uid, kind, bytes, created_at) VALUES (?,?,?,?,?)",
                     (body.public_id, uid, "story", size, now))
         cur = con.execute(
@@ -2222,8 +3059,27 @@ def saved_posts(before: int | None = None, limit: int = 30, uid: str = Depends(c
     return {"posts": [post_dict(r, uid) for r in rows]}
 
 
+@app.get("/posts/{post_id}")
+def get_post(post_id: int, uid: str = Depends(current_user)):
+    """Step 35: open ONE photo post (placed after /posts/saved so "saved" is never read as an id).
+    Same VISIBLE rule as the feed; hidden and missing give the same 404."""
+    with closing(db()) as con:
+        return post_dict(visible_post(con, post_id, uid), uid)
+
+
 def _delete_user_data(con, uid: str):
     """Removes EVERYTHING that belongs to a user from the database; their files are queued for Cloudinary deletion."""
+    # Step 38: what the engine kept about my content, and what it kept about me
+    for ctype, table in (("post", "posts"), ("short", "shorts")):
+        con.execute(f"DELETE FROM interaction_events WHERE content_type='{ctype}' AND content_id IN "
+                    f"(SELECT id FROM {table} WHERE uid=?)", (uid,))
+        con.execute(f"DELETE FROM rec_hidden WHERE kind='item' AND target IN (SELECT '{ctype}:'||id FROM {table} WHERE uid=?)", (uid,))
+    con.execute("DELETE FROM interaction_events WHERE uid=?", (uid,))
+    con.execute("DELETE FROM rec_hidden WHERE uid=? OR (kind='creator' AND target=?)", (uid, uid))
+    con.execute("DELETE FROM ad_impressions WHERE uid=?", (uid,))
+    con.execute("DELETE FROM feed_snapshots WHERE uid=?", (uid,))
+    con.execute("DELETE FROM push_tokens WHERE uid=?", (uid,))      # Step 46
+    con.execute("DELETE FROM push_outbox WHERE uid=?", (uid,))
     # my own posts / shorts / stories, with everything that hangs on them
     for t in ("likes", "bookmarks", "comments", "post_reactions"):
         con.execute(f"DELETE FROM {t} WHERE post_id IN (SELECT id FROM posts WHERE uid=?)", (uid,))
@@ -2263,6 +3119,8 @@ def _delete_user_data(con, uid: str):
     for m_row in con.execute("SELECT public_id, kind FROM media WHERE uid=?", (uid,)).fetchall():
         trash_media(con, m_row["public_id"], m_row["kind"])
     con.execute("DELETE FROM media WHERE uid=?", (uid,))
+    con.execute("DELETE FROM media_usage WHERE uid=?", (uid,))
+    con.execute("DELETE FROM lock_recovery WHERE uid=?", (uid,))
     con.execute("DELETE FROM ai_usage WHERE uid=?", (uid,))
     con.execute("DELETE FROM notifications WHERE uid=? OR actor=?", (uid, uid))      # Step 27
     con.execute("DELETE FROM reports WHERE reporter=? AND target_type='problem'", (uid,))   # Step 28: my own free-text problem reports
@@ -2290,27 +3148,24 @@ def delete_account(uid: str = Depends(current_user)):
 
 
 # =====================================================================
-# Sociax AI Pro ($10) and Sociax App Pro ($3) payments with Chapa (TEST mode). One-time payment = 30 days, NOT a subscription.
-# The two products are SEPARATE (plan v3.1): each one has its own price, its own expiry, and buying one never unlocks the other.
+# Sociax Pro ($15 / month) payments with Chapa (TEST mode). One-time payment = 30 days, NOT a subscription.
+# Plan v3.2: there is ONE paid plan. The old $10 AI Pro and $3 App Pro are no longer sold; time already paid for them
+# (verified before this version) is honoured until it ends, as Sociax Pro.
 # Rules (Chapa plan): the app never says "I paid". Pro is granted ONLY here, after the server
 # verifies the transaction directly with Chapa and checks reference, status, amount, currency and user.
 # =====================================================================
 import secrets  # noqa: E402
 from decimal import Decimal, InvalidOperation  # noqa: E402
 
-AI_PRO_PRICE = Decimal("10")          # fixed on the SERVER; the app can never send a price
-AI_PRO_CURRENCY = "USD"               # ETB and USD are supported by Chapa; no silent conversion
-AI_PRO_SECONDS = 30 * 24 * 3600
-APP_PRO_PRICE = Decimal("3")          # plan v3.1: US $3 per month, 600 MB combined media allowance
-APP_PRO_CURRENCY = "USD"
-APP_PRO_SECONDS = 30 * 24 * 3600
+PRO_PRICE = Decimal("15")             # fixed on the SERVER; the app can never send a price
+PRO_CURRENCY = "USD"                  # ETB and USD are supported by Chapa; no silent conversion
+PRO_SECONDS = 30 * 24 * 3600
+LEGACY_PRO_PRODUCTS = ("ai_pro_1_month", "app_pro_1_month")   # sold under plan v3.1; never sold again, only honoured
 
 # product id used by the app in POST /payments/initialize?product=...  ->  what the SERVER sells
 PRODUCTS = {
-    "ai_pro": {"product": "ai_pro_1_month", "price": AI_PRO_PRICE, "currency": AI_PRO_CURRENCY,
-               "seconds": AI_PRO_SECONDS, "title": "Sociax AI Pro", "description": "AI Pro, 1 month"},
-    "app_pro": {"product": "app_pro_1_month", "price": APP_PRO_PRICE, "currency": APP_PRO_CURRENCY,
-                "seconds": APP_PRO_SECONDS, "title": "Sociax App Pro", "description": "App Pro, 1 month"},
+    "pro": {"product": "pro_1_month", "price": PRO_PRICE, "currency": PRO_CURRENCY,
+            "seconds": PRO_SECONDS, "title": "Sociax Pro", "description": "Sociax Pro, 1 month"},
 }
 PRODUCT_BY_DB_NAME = {v["product"]: v for v in PRODUCTS.values()}
 CHAPA_RETURN_URL = os.getenv("CHAPA_RETURN_URL")  # optional page Chapa sends the user back to (never grants Pro)
@@ -2328,31 +3183,27 @@ with closing(db()) as _con:
     _con.commit()
 
 
-def _pro_expires_at(uid: str, product: str) -> int:
+def _pro_expires_at(uid: str) -> int:
     with closing(db()) as con:
-        return _pro_expires_at_con(con, uid, product)
+        return _pro_expires_at_con(con, uid)
 
 
-def _pro_expires_at_con(con, uid: str, product: str) -> int:
-    r = con.execute("SELECT MAX(pro_expires_at) FROM payments WHERE uid=? AND product=? AND granted=1",
-                    (uid, product)).fetchone()
+def _pro_expires_at_con(con, uid: str, product: str | None = None) -> int:
+    """End of the paid time. product=None: Sociax Pro plus any time still paid under the two old plans."""
+    names = (product,) if product else (PRODUCTS["pro"]["product"],) + LEGACY_PRO_PRODUCTS
+    marks = ",".join("?" * len(names))
+    r = con.execute(f"SELECT MAX(pro_expires_at) FROM payments WHERE uid=? AND product IN ({marks}) AND granted=1",
+                    (uid, *names)).fetchone()
     return int(r[0] or 0)
 
 
-def ai_pro_expires_at(uid: str) -> int:
-    return _pro_expires_at(uid, PRODUCTS["ai_pro"]["product"])
+def pro_expires_at(uid: str) -> int:
+    return _pro_expires_at(uid)
 
 
-def app_pro_expires_at(uid: str) -> int:
-    return _pro_expires_at(uid, PRODUCTS["app_pro"]["product"])
-
-
-def is_ai_pro(uid: str) -> bool:
-    return ai_pro_expires_at(uid) > int(time.time())
-
-
-def is_app_pro(uid: str) -> bool:
-    return app_pro_expires_at(uid) > int(time.time())
+def is_pro(uid: str) -> bool:
+    """True only after a VERIFIED payment whose time has not ended. Benefits unlock immediately after verification."""
+    return pro_expires_at(uid) > int(time.time())
 
 
 def _payment_dict(row) -> dict:
@@ -2369,8 +3220,8 @@ def _own_payment(con, uid: str, tx_ref: str):
 
 
 @app.post("/payments/initialize")
-def payments_initialize(uid: str = Depends(current_user), product: str = "ai_pro"):
-    """product = ai_pro ($10, AI allowance x5) or app_pro ($3, 600 MB media). The price is chosen HERE, never by the app."""
+def payments_initialize(uid: str = Depends(current_user), product: str = "pro"):
+    """product = pro (Sociax Pro, $15 / month: 1.5 GB media per day, AI x7, AI generation). The price is chosen HERE, never by the app."""
     rate_limit(uid, "pay_init", 5, 60)
     item = PRODUCTS.get(product)
     if item is None:
@@ -2408,8 +3259,7 @@ def payments_initialize(uid: str = Depends(current_user), product: str = "ai_pro
 
 @app.get("/payments/verify/{tx_ref}")
 def payments_verify(tx_ref: str, uid: str = Depends(current_user)):
-    """Ask Chapa directly. Grants 30 days of the product that was bought (AI Pro or App Pro) exactly once
-    per successful, matching transaction."""
+    """Ask Chapa directly. Grants 30 days of Sociax Pro exactly once per successful, matching transaction."""
     rate_limit(uid, "pay_verify", 20, 60)
     with closing(db()) as con:
         row = _own_payment(con, uid, tx_ref)
@@ -2437,7 +3287,7 @@ def payments_verify(tx_ref: str, uid: str = Depends(current_user)):
             else:
                 now = int(time.time())
                 con.execute("BEGIN IMMEDIATE")
-                cur = _pro_expires_at_con(con, uid, row["product"])
+                cur = _pro_expires_at_con(con, uid)   # extends from the end of any Pro time still running
                 start = max(now, cur)  # still active -> extend from the current end; else from now
                 got = con.execute(
                     "UPDATE payments SET status='success', granted=1, paid_at=?, pro_started_at=?, pro_expires_at=?, "
@@ -2453,12 +3303,169 @@ def payments_verify(tx_ref: str, uid: str = Depends(current_user)):
         return _payment_dict(_own_payment(con, uid, tx_ref))
 
 
-def ai_pro_expires_at_con(con, uid: str) -> int:
-    return _pro_expires_at_con(con, uid, PRODUCTS["ai_pro"]["product"])
-
-
 @app.get("/payments/status/{tx_ref}")
 def payments_status(tx_ref: str, uid: str = Depends(current_user)):
     """What the SERVER already knows (no call to Chapa)."""
     with closing(db()) as con:
         return _payment_dict(_own_payment(con, uid, tx_ref))
+
+
+# =====================================================================
+# Step 32: App Lock recovery (plan v3.3 section 3). The PIN / pattern itself NEVER reaches the server: only a salted hash
+# lives on the phone. When the user forgot it, they prove account ownership with a FRESH Google sign-in; the server checks
+# that the sign-in really happened a moment ago (Firebase `auth_time`), then hands out a short-lived, single-use token.
+# The app redeems the token and only then lets the user choose a new PIN / pattern. The old one is never shown or sent.
+# =====================================================================
+LOCK_RECOVERY_TTL = 300               # seconds a recovery token lives
+LOCK_RECOVERY_MAX_AUTH_AGE = 300      # the Google sign-in must be at most 5 minutes old
+
+
+def auth_age_seconds(authorization: str | None) -> int | None:
+    """How many seconds ago the user really signed in (Firebase `auth_time`). None = unknown -> treated as NOT fresh."""
+    token = (authorization or "")[7:]
+    if DEV_AUTH and token.startswith("dev-"):
+        return 10_000 if token.startswith("dev-stale") else 0     # tests: "dev-stale..." simulates an old sign-in
+    try:
+        _init_firebase()
+        from firebase_admin import auth as fb_auth
+        at = fb_auth.verify_id_token(token).get("auth_time")
+        return max(0, int(time.time()) - int(at)) if at else None
+    except Exception:
+        return None
+
+
+def _lock_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+@app.post("/lock/recovery")
+def lock_recovery_start(uid: str = Depends(current_user), authorization: str = Header(None)):
+    """Step 1: needs a Google sign-in from the last 5 minutes. Returns a one-time token (never logged, stored only as a hash)."""
+    import secrets as _secrets
+    rate_limit(uid, "lock_recovery", 5, 3600)
+    age = auth_age_seconds(authorization)
+    if age is None or age > LOCK_RECOVERY_MAX_AUTH_AGE:
+        raise HTTPException(403, {"code": "reauth_required", "message": "Please verify with Google again."})
+    token = _secrets.token_urlsafe(32)
+    now = int(time.time())
+    with closing(db()) as con:
+        con.execute("DELETE FROM lock_recovery WHERE uid=? OR expires_at<?", (uid, now))   # only the newest token is valid
+        con.execute("INSERT INTO lock_recovery(token_hash, uid, expires_at) VALUES (?,?,?)",
+                    (_lock_token_hash(token), uid, now + LOCK_RECOVERY_TTL))
+        con.commit()
+    return {"token": token, "expires_in": LOCK_RECOVERY_TTL}
+
+
+class LockToken(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+
+
+@app.post("/lock/recovery/confirm")
+def lock_recovery_confirm(body: LockToken, uid: str = Depends(current_user)):
+    """Step 2: the token works ONCE, only for the user it was made for, and only for 5 minutes. Every failure looks the same."""
+    rate_limit(uid, "lock_confirm", 10, 3600)
+    now = int(time.time())
+    h = _lock_token_hash(body.token)
+    with closing(db()) as con:
+        row = con.execute("SELECT expires_at FROM lock_recovery WHERE token_hash=? AND uid=?", (h, uid)).fetchone()
+        if row:
+            con.execute("DELETE FROM lock_recovery WHERE token_hash=?", (h,))     # used up, whatever happens next
+            con.commit()
+        if not row or row["expires_at"] < now:
+            raise HTTPException(403, {"code": "recovery_invalid", "message": "This verification is not valid. Please try again."})
+    return {"ok": True}
+
+
+# =====================================================================
+# Step 41 (plan v3.8 section 28): AdMob in the Short Video feed, Free accounts only, at most 20 COUNTED impressions per day.
+# - GET  /ads/status      : may this account see ads, how many are counted today, how many are left, when the day resets.
+# - POST /ads/impression  : the phone reports an impression that the official AdMob SDK callback (onAdImpression) confirmed.
+#                           The SERVER counts it: once per key, never above the cap, never for Pro. The phone's own counter is never trusted.
+# Pro is decided HERE from the verified payment (is_pro), never from anything the phone says. The ad itself (what is shown, the
+# AdMob unit) is the phone's business; this server only keeps the count and the rules.
+# =====================================================================
+AD_DAILY_CAP = 20                       # plan v3.8 section 28.1: a CAP, not a target
+AD_DAY_OFFSET_MINUTES = int(os.getenv("AD_DAY_UTC_OFFSET_MINUTES", "0"))   # the app-defined day starts at 00:00 UTC + this offset (default 00:00 UTC)
+AD_EVERY_MIN, AD_EVERY_MAX = 3, 4       # spacing: an ad after about 3 (sometimes 4) ordinary videos, never back-to-back
+AD_RETENTION_DAYS = 35
+ADS_PER_MINUTE = 30                     # abuse limit per account
+_last_ad_purge = 0.0
+
+
+def ad_day(now: float | None = None) -> int:
+    """The app-defined day number. The reset time is explicit: 00:00 UTC (+ AD_DAY_UTC_OFFSET_MINUTES). Server clock only."""
+    t = int(time.time() if now is None else now) + AD_DAY_OFFSET_MINUTES * 60
+    return t // 86400
+
+
+def ad_day_resets_at(now: float | None = None) -> int:
+    return (ad_day(now) + 1) * 86400 - AD_DAY_OFFSET_MINUTES * 60
+
+
+def ads_counted_today(con, uid: str) -> int:
+    return int(con.execute("SELECT COUNT(*) FROM ad_impressions WHERE uid=? AND day=?", (uid, ad_day())).fetchone()[0])
+
+
+def _ad_status_dict(uid: str, used: int, pro: bool) -> dict:
+    now = int(time.time())
+    remaining = 0 if pro else max(0, AD_DAILY_CAP - used)
+    return {"eligible": (not pro) and remaining > 0, "pro": pro, "reason": "pro" if pro else ("cap" if remaining == 0 else None),
+            "daily_cap": AD_DAILY_CAP, "used": used, "remaining": remaining,
+            "resets_at": ad_day_resets_at(now), "reset_in_seconds": max(0, ad_day_resets_at(now) - now),
+            "every_min": AD_EVERY_MIN, "every_max": AD_EVERY_MAX}
+
+
+@app.get("/ads/status")
+def ads_status(uid: str = Depends(current_user)):
+    rate_limit(uid, "ads_status", 60, 60)
+    pro = is_pro(uid)
+    with closing(db()) as con:
+        used = ads_counted_today(con, uid)
+        age = con.execute("SELECT age FROM users WHERE uid=?", (uid,)).fetchone()
+    out = _ad_status_dict(uid, used, pro)
+    # Under 18: the phone must ask AdMob for child-safe, non-personalised treatment (age is the one given at sign-up).
+    out["minor"] = bool(age and age["age"] < 18)
+    return out
+
+
+class AdImpression(BaseModel):
+    idem_key: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")   # one per loaded ad; the phone re-uses it on retry
+
+
+@app.post("/ads/impression")
+def ads_impression(body: AdImpression, uid: str = Depends(current_user)):
+    rate_limit(uid, "ads_impression", ADS_PER_MINUTE, 60)
+    if not isinstance(body.idem_key, str) or not _IDEM_RE.match(body.idem_key):
+        raise HTTPException(422, "Bad idempotency key")
+    pro = is_pro(uid)       # verified payment state, read on the server
+    global _last_ad_purge
+    with closing(db()) as con:
+        con.execute("BEGIN IMMEDIATE")      # one writer at a time: two phones cannot both take the last place under the cap
+        try:
+            now = time.time()
+            if now - _last_ad_purge > 3600:
+                _last_ad_purge = now
+                con.execute("DELETE FROM ad_impressions WHERE day < ?", (ad_day(now) - AD_RETENTION_DAYS,))
+            used = ads_counted_today(con, uid)
+            dup = con.execute("SELECT 1 FROM ad_impressions WHERE uid=? AND idem_key=?", (uid, body.idem_key)).fetchone()
+            if dup:                         # a retry of the same impression: counted once, whatever the cap is now
+                con.commit()
+                return {"ok": True, "counted": False, "duplicate": True, **_ad_status_dict(uid, used, pro)}
+            if pro:                         # Pro never sees ads: nothing is counted
+                con.commit()
+                return {"ok": True, "counted": False, "reason": "pro", **_ad_status_dict(uid, used, pro)}
+            if used >= AD_DAILY_CAP:        # cap reached: this one is NOT counted
+                con.commit()
+                return {"ok": True, "counted": False, "reason": "cap", **_ad_status_dict(uid, used, pro)}
+            con.execute("INSERT INTO ad_impressions(uid, day, idem_key, created_at) VALUES (?,?,?,?)",
+                        (uid, ad_day(now), body.idem_key, int(now)))
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+    return {"ok": True, "counted": True, **_ad_status_dict(uid, used + 1, pro)}
+
+
+# Step 46: the push worker runs only when the owner switches it on (PUSH_ENABLED=1) AND real Firebase login is used (not DEV_AUTH).
+if os.getenv("PUSH_ENABLED") == "1" and not DEV_AUTH:
+    start_push_worker()

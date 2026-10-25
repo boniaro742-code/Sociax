@@ -31,6 +31,7 @@ class FakeHttpx:
         return FakeResp({"content": [{"type": "text", "text": "hello "}, {"type": "text", "text": "from claude"}]})
 
 ap.httpx = FakeHttpx
+ap.RETRY_WAIT_S = 0
 
 def setup(grok=False, gemini=False, claude=False):
     ap.XAI_KEY = "x" if grok else None

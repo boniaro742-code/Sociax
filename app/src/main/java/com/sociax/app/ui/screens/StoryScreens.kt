@@ -68,7 +68,7 @@ fun StoriesRow(groups: List<StoryGroup>, onAdd: () -> Unit, onOpen: (Int) -> Uni
                     Modifier.size(64.dp).clip(CircleShape).background(Color(0x2EFFFFFF))
                         .border(1.dp, Color(0x80FFFFFF), CircleShape).clickable(onClick = onAdd),
                     contentAlignment = Alignment.Center
-                ) { Icon(Icons.Filled.Add, "Add story", tint = Color.White, modifier = Modifier.size(26.dp)) }
+                ) { Icon(Icons.Filled.Add, tr("a11y_add_story"), tint = Color.White, modifier = Modifier.size(26.dp)) }
                 Spacer(Modifier.height(5.dp))
                 Text(tr("add_story"), color = Color.White.copy(.9f), fontSize = 12.sp, maxLines = 1)
             }
@@ -122,7 +122,7 @@ fun CreateStoryScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit) 
             GlassField(words, { words = it.take(STORY_CAPTION_MAX) }, tr("text_story_hint"))
         } else {
             GlassPanel(Modifier.fillMaxWidth().height(420.dp), corner = 28) {
-                if (uri != null) AsyncImage(uri, "Selected photo", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                if (uri != null) AsyncImage(uri, tr("a11y_selected_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     Icon(Icons.Filled.AddPhotoAlternate, null, tint = Teal, modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(8.dp))
@@ -312,13 +312,13 @@ fun StoryViewerScreen(api: ApiClient, groups: List<StoryGroup>, startGroup: Int,
                     Text(timeAgo(story.createdAt), color = Color.White.copy(.7f), fontSize = 11.sp)
                 }
                 if (story.mine) Box {
-                    GlassIconButton(Icons.Filled.MoreVert, "More", { menuOpen = true }, size = 36, onMedia = true)
+                    GlassIconButton(Icons.Filled.MoreVert, tr("a11y_more"), { menuOpen = true }, size = 36, onMedia = true)
                     DropdownMenu(menuOpen, { menuOpen = false }) {
                         DropdownMenuItem(text = { Text(tr("delete_story")) }, onClick = { menuOpen = false; deleteCurrent() })
                     }
                 }
                 Spacer(Modifier.width(8.dp))
-                GlassIconButton(Icons.Filled.Close, "Close", onClose, size = 36, onMedia = true)
+                GlassIconButton(Icons.Filled.Close, tr("a11y_close"), onClose, size = 36, onMedia = true)
             }
 
             Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
@@ -363,7 +363,7 @@ fun StoryViewerScreen(api: ApiClient, groups: List<StoryGroup>, startGroup: Int,
                                 Modifier.size(42.dp).clip(CircleShape).background(PaperWhite)
                                     .clickable { if (text.isNotBlank()) reply("Replied to your story: ${text.trim()}") },
                                 contentAlignment = Alignment.Center
-                            ) { Icon(Icons.Outlined.Send, "Send", tint = Navy, modifier = Modifier.size(20.dp)) }
+                            ) { Icon(Icons.Outlined.Send, tr("a11y_send"), tint = Navy, modifier = Modifier.size(20.dp)) }
                         }
                     }
                     Spacer(Modifier.width(8.dp))
@@ -371,7 +371,7 @@ fun StoryViewerScreen(api: ApiClient, groups: List<StoryGroup>, startGroup: Int,
                         Modifier.size(50.dp).clip(CircleShape).background(ControlFill).border(1.dp, ControlBorder, CircleShape)
                             .clickable { reply("\u2764\uFE0F Liked your story") },
                         contentAlignment = Alignment.Center
-                    ) { Icon(Icons.Filled.Favorite, "Send a heart", tint = LikeRed) }
+                    ) { Icon(Icons.Filled.Favorite, tr("a11y_heart"), tint = LikeRed) }
                 }
             }
         }

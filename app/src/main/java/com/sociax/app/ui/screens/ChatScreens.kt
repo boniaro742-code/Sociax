@@ -27,10 +27,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.sociax.app.data.*
 import com.sociax.app.ui.theme.*
 import kotlinx.coroutines.CancellationException
@@ -140,6 +143,17 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
     var notice by remember { mutableStateOf<String?>(null) }
     var followAsk by remember { mutableStateOf<String?>(null) }      // Step 22: @username who wants a follow first
     var presence by remember(chat.id) { mutableStateOf<Presence?>(null) }     // Step 25: online / last seen of the other person
+    var peerReadId by remember(chat.id) { mutableStateOf<Long?>(null) }       // Step 43: newest message of mine the other person has seen (null = not shown)
+    // Step 43: a message is only marked read while this screen is really on screen (not while the app is in the background / phone locked)
+    val lifeOwner = LocalLifecycleOwner.current
+    var onScreen by remember { mutableStateOf(true) }
+    DisposableEffect(lifeOwner) {
+        val obs = LifecycleEventObserver { _, ev ->
+            if (ev == Lifecycle.Event.ON_PAUSE) onScreen = false else if (ev == Lifecycle.Event.ON_RESUME) onScreen = true
+        }
+        lifeOwner.lifecycle.addObserver(obs)
+        onDispose { lifeOwner.lifecycle.removeObserver(obs) }
+    }
     val listState = rememberLazyListState()
     val aiNoPrivate = tr("ai_na_private"); val aiDisabled = tr("ai_disabled_group"); val aiNotConnected = tr("ai_not_connected"); val aiQuota = tr("ai_quota_group"); val aiError = tr("ai_error_group")
 
@@ -150,14 +164,20 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
 
     // first load, then check for new messages every few seconds while this page is open
     LaunchedEffect(chat.id) {
-        try { merge(api.messages(chat.id, null)); api.markRead(chat.id) }
-        catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
+        var needsRead = true            // Step 43: something new has not been marked read yet (it waits while the app is not on screen)
+        try {
+            val first = api.messagesPage(chat.id, null)
+            merge(first.messages); peerReadId = first.peerReadId
+            if (onScreen) { api.markRead(chat.id); needsRead = false }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
         loading = false
         while (true) {
             delay(2500)
             try {
-                val fresh = api.messages(chat.id, msgs.lastOrNull()?.id)
-                if (fresh.isNotEmpty()) { merge(fresh); api.markRead(chat.id) }
+                val page = api.messagesPage(chat.id, msgs.lastOrNull()?.id)
+                peerReadId = page.peerReadId
+                if (page.messages.isNotEmpty()) { merge(page.messages); needsRead = true }
+                if (needsRead && onScreen) { api.markRead(chat.id); needsRead = false }
                 error = null
             } catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
         }
@@ -227,7 +247,7 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
 
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, "Back", onBack)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack)
             Spacer(Modifier.width(10.dp))
             ChatAvatar(chat, 40)
             Spacer(Modifier.width(10.dp))
@@ -249,7 +269,9 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
             if (loading) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.Center))
             else if (msgs.isEmpty()) Text(tr("say_hello"), color = Color.White.copy(.6f), modifier = Modifier.align(Alignment.Center))
             else LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(msgs, key = { it.id }) { Bubble(it, chat.isGroup) }
+                // Step 43: "Seen" only under the NEWEST of my messages the other person has seen (one-to-one chats, both switches on)
+                val seenId = peerReadId?.let { pr -> msgs.filter { it.mine && !it.held && it.id <= pr }.maxOfOrNull { it.id } }
+                items(msgs, key = { it.id }) { Bubble(it, chat.isGroup, seen = it.id == seenId) }
             }
         }
 
@@ -271,7 +293,7 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
                     )
                     Box(Modifier.size(42.dp).clip(CircleShape).background(PaperWhite).clickable { send(text, true) },
                         contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Send, "Send", tint = Navy, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Outlined.Send, tr("a11y_send"), tint = Navy, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -279,14 +301,14 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
             Box(Modifier.size(50.dp).clip(CircleShape).background(ControlFill).border(1.dp, ControlBorder, CircleShape)
                 .clickable { send("\u2764\uFE0F", false) },
                 contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Favorite, "Send a heart", tint = LikeRed)
+                Icon(Icons.Filled.Favorite, tr("a11y_heart"), tint = LikeRed)
             }
         }
     }
 }
 
 @Composable
-private fun Bubble(m: ChatMessage, group: Boolean) {
+private fun Bubble(m: ChatMessage, group: Boolean, seen: Boolean = false) {
     if (m.kind == "system") {
         Text(m.text, color = Color.White.copy(.6f), fontSize = 12.sp, textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp))
@@ -307,6 +329,7 @@ private fun Bubble(m: ChatMessage, group: Boolean) {
             Text(m.text, color = Color.White, fontSize = 15.sp)
             Text(timeAgo(m.createdAt), color = Color.White.copy(.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
             if (m.held) Text(tr("follow_first_waiting"), color = Color.White.copy(.8f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
+            else if (seen) Text(tr("seen_label"), color = Color.White.copy(.8f), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.End))
         }
     }
 }
@@ -351,7 +374,7 @@ fun NewChatScreen(api: ApiClient, onBack: () -> Unit, onOpen: (ChatSummary) -> U
                             Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
                             Text(u.displayName + if (u.isPrivate) " · " + tr("private_tag") else "", color = Color.White.copy(.7f), fontSize = 12.sp)
                         }
-                        Icon(Icons.Filled.ChatBubble, "Message", tint = Teal)
+                        Icon(Icons.Filled.ChatBubble, tr("a11y_message"), tint = Teal)
                     }
                 }
             }
@@ -420,7 +443,7 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                                 Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
                                 Text(u.displayName, color = Color.White.copy(.7f), fontSize = 12.sp)
                             }
-                            Icon(Icons.Filled.Add, "Add", tint = Teal)
+                            Icon(Icons.Filled.Add, tr("a11y_add"), tint = Teal)
                         }
                     }
                 }
