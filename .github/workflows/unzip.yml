@@ -1,0 +1,29 @@
+name: Unzip v57
+on:
+  push:
+    branches: [v57]
+    paths: ['*.zip']
+permissions:
+  contents: write
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip and commit
+        run: |
+          mkdir /tmp/x
+          unzip -q ./*.zip -d /tmp/x
+          n=$(ls -A /tmp/x | wc -l)
+          if [ "$n" = "1" ] && [ -d "/tmp/x/$(ls -A /tmp/x)" ]; then
+            src="/tmp/x/$(ls -A /tmp/x)"
+          else
+            src=/tmp/x
+          fi
+          rsync -a --exclude='.github' "$src"/ ./
+          rm -f ./*.zip
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Unzip Sociax v57" || echo "nothing to commit"
+          git push
