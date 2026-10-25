@@ -37,6 +37,12 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Android source sanity checks (strings in 5 languages, brackets, resources)
+        run: python3 tools/check_android_sources.py app/src/main
+
+      - name: App and backend agree on every address (Step 40)
+        run: python3 tools/check_api_contract.py
+
       - name: Check project files
         run: |
           echo "Repository root:"
@@ -73,7 +79,7 @@ jobs:
 
       - name: Check the backend address
         env:
-          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL }}
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL || secrets.SOCIAX_API_URL }}
         run: |
           if [ -z "$SOCIAX_API_URL" ]; then
             echo "::warning title=SOCIAX_API_URL is not set::The APK will try http://10.0.2.2:8000 (only works in the Android emulator). For a real phone set it: GitHub > Settings > Secrets and variables > Actions > Variables > SOCIAX_API_URL = your Render address (https://...onrender.com)."
@@ -81,10 +87,23 @@ jobs:
             echo "APK will talk to: $SOCIAX_API_URL"
           fi
 
+      - name: Check the AdMob ids (Step 41)
+        env:
+          SOCIAX_ADMOB_APP_ID: ${{ vars.SOCIAX_ADMOB_APP_ID }}
+          SOCIAX_ADMOB_NATIVE_UNIT_ID: ${{ vars.SOCIAX_ADMOB_NATIVE_UNIT_ID }}
+        run: |
+          if [ -z "$SOCIAX_ADMOB_APP_ID" ] || [ -z "$SOCIAX_ADMOB_NATIVE_UNIT_ID" ]; then
+            echo "::warning title=AdMob TEST ids::SOCIAX_ADMOB_APP_ID / SOCIAX_ADMOB_NATIVE_UNIT_ID are not set, so this APK shows Google TEST ads only (no income). For real ads add both in GitHub > Settings > Secrets and variables > Actions > Variables."
+          else
+            echo "AdMob ids are set (a wrongly typed id is ignored and the test id is used)."
+          fi
+
       - name: Build debug APK
         shell: bash
         env:
-          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL }}
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL || secrets.SOCIAX_API_URL }}
+          SOCIAX_ADMOB_APP_ID: ${{ vars.SOCIAX_ADMOB_APP_ID }}
+          SOCIAX_ADMOB_NATIVE_UNIT_ID: ${{ vars.SOCIAX_ADMOB_NATIVE_UNIT_ID }}
         run: |
           set -o pipefail
           ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
@@ -135,14 +154,13 @@ jobs:
           retention-days: 30
 
   # ---------------------------------------------------------------------------------------------
-  # The backend checks (real FastAPI / pydantic). Shows a red mark when a check fails, but the
-  # whole run stays green so the APK above is always delivered.
+  # The backend checks (real FastAPI / pydantic) = the RELEASE GATE (plan v3.6 section 5): when one fails the run is RED and
+  # the release candidate must not be called ready. The APK job above is separate, so the APK is still delivered for testing.
   # ---------------------------------------------------------------------------------------------
   backend-checks:
     name: Backend checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -153,6 +171,15 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - run: pip install -r backend/requirements.txt
+
+      # Step 48: test_rank_engine.py builds and starts the real Go engine and compares it with ranker.py
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend-go/go.mod
+
+      - name: Python syntax check
+        run: python -m compileall -q backend
 
       - name: Run every backend check
         working-directory: backend
@@ -165,3 +192,58 @@ jobs:
             python "$t" || failed=1
           done
           exit $failed
+
+  # ---------------------------------------------------------------------------------------------
+  # Step 48: the optional Go engine (backend-go/). Release gate like the backend checks: a red run means "not ready".
+  # ---------------------------------------------------------------------------------------------
+  go-engine:
+    name: Go engine checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend-go/go.mod
+
+      - name: Formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "::error::gofmt needed on: $unformatted"; exit 1; fi
+
+      - name: Static checks (go vet)
+        run: go vet ./...
+
+      - name: Tests with the race detector (includes the parity test against the Python ranker)
+        run: go test ./... -race -count=1
+
+      - name: Does ranker.py still give the answers saved in parity.json?
+        working-directory: .
+        run: python3 tools/gen_rank_parity.py --check
+
+      - name: Build the service
+        run: go build -o /tmp/sociax-engine ./cmd/sociax-engine
+
+      - name: Deployment checker works (self-test against fakes, no network)
+        working-directory: .
+        run: python3 tools/check_engine_deploy.py --self-test
+
+      - name: Start the REAL engine and run the deployment checker against it
+        working-directory: .
+        env:
+          ENGINE_TOKEN: ci-only-secret-0123456789abcdef0123
+          PORT: "18080"
+        run: |
+          /tmp/sociax-engine > /tmp/engine.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break; sleep 0.5; done
+          python3 tools/check_engine_deploy.py http://127.0.0.1:18080 --rounds 20
+          rc=$?
+          kill -TERM $pid; wait $pid || true
+          if grep -q "ci-only-secret" /tmp/engine.log; then echo "::error::the secret appears in the engine log"; exit 1; fi
+          exit $rc
