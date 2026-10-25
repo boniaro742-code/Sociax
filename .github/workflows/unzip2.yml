@@ -1,0 +1,59 @@
+name: Unzip uploaded zip
+
+on:
+  push:
+    branches-ignore: [main]
+    paths: ['*.zip']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip and replace project files
+        run: |
+          set -e
+          ZIP=$(ls -t *.zip 2>/dev/null | head -n 1)
+          if [ -z "$ZIP" ]; then
+            echo "No zip at repo root"
+            exit 0
+          fi
+          echo "$ZIP" > /tmp/zipname
+          rm -rf /tmp/x
+          mkdir /tmp/x
+          unzip -q "$ZIP" -d /tmp/x
+          N=$(ls -A /tmp/x | wc -l)
+          SRC=/tmp/x
+          if [ "$N" = "1" ]; then
+            ONE=$(ls -A /tmp/x)
+            if [ -d "/tmp/x/$ONE" ]; then
+              SRC="/tmp/x/$ONE"
+            fi
+          fi
+          if [ ! -d "$SRC/app" ]; then
+            echo "Not a Sociax zip"
+            exit 1
+          fi
+          if [ ! -d "$SRC/backend" ]; then
+            echo "Not a Sociax zip"
+            exit 1
+          fi
+          rsync -a --delete --exclude=.git --exclude=.github --exclude='*.zip' "$SRC"/ ./
+          rm -f "$ZIP"
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing changed"
+            exit 0
+          fi
+          git commit -m "Unzip $(cat /tmp/zipname)"
+          git push
