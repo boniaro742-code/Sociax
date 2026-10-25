@@ -92,8 +92,11 @@ private fun PushSwitch(api: ApiClient) {
             busy = false
         }
     }
+        
+    val permissionNeededText = tr("push_permission_needed")
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) turnOn() else { on = false; msg = tr("push_permission_needed") }
+        if (granted) turnOn() else { on = false; msg = permissionNeededText }
+    
     }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp)) {
