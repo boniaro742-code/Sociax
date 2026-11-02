@@ -194,49 +194,45 @@ fun HomeScreen(
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        // the floating tab bar sits on top of the page, so the last post must be able to scroll above it
+        // the docked tab bar sits on top of the page, so the last post must be able to scroll above it
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 16.dp + bottomBarClearance()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item { // header like the reference: white S + "Sociax" on the left, three round frosted buttons on the right
+        item { // header like the new design: "Sociax" in purple on the left; new post, search and the bell (with its unread number) on the right
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 SociaxMark(Modifier.weight(1f))
-                GlassIconButton(Icons.Filled.Add, tr("a11y_new_post"), onCreate); Spacer(Modifier.width(8.dp))
-                Box {   // Step 27: the bell opens the notification list; a small dot shows unread ones
-                    GlassIconButton(Icons.Outlined.Notifications, tr("a11y_notifications"), onNotifications)
-                    if (notifUnread > 0) Box(Modifier.align(Alignment.TopEnd).size(11.dp).clip(CircleShape).background(Teal))
-                }
-                Spacer(Modifier.width(8.dp))
-                GlassIconButton(Icons.Outlined.ChatBubbleOutline, tr("a11y_messages"), onMessages)
-            }
-        }
-        item { AlarmPrompt() }      // Step 33: optional daily-alarm prompt (Yes / No / X); shows nothing once answered
-        item { StoriesRow(storyGroups, onAddStory) { onOpenStory(storyGroups, it) } }
-        item { // For you / Following: dark inset pill with a soft-white selected part, exactly like the reference
-            InsetPill(Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(4.dp)) {
-                    SegTab(tr("for_you"), tab == "for_you", Modifier.weight(1f)) { tab = "for_you" }
-                    SegTab(tr("following"), tab == "following", Modifier.weight(1f)) { tab = "following" }
-                }
-            }
-        }
-        item { // One unified search field (plan section 4): slim inset pill, same family as the switch above
-            InsetPill(Modifier.fillMaxWidth().clickable(onClick = onSearch)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Search, null, tint = Color.White.copy(.7f), modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(tr("search_hint"), color = Color.White.copy(.6f), fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    Icon(
-                        Icons.Filled.Refresh, "Refresh", tint = Color.White.copy(.8f),
-                        modifier = Modifier.size(22.dp).clip(RoundedCornerShape(50)).clickable { reload++ }
+                Box(
+                    Modifier.size(44.dp).clip(CircleShape).background(AccentBrush).clickable(onClick = onCreate),
+                    contentAlignment = Alignment.Center
+                ) { Icon(Icons.Filled.Add, tr("a11y_new_post"), tint = OnAccent, modifier = Modifier.size(24.dp)) }
+                Spacer(Modifier.width(10.dp))
+                GlassIconButton(Icons.Outlined.Search, tr("search"), onSearch, size = 44)
+                Spacer(Modifier.width(10.dp))
+                Box {   // Step 27: the bell opens the notification list; the number shows how many are unread
+                    GlassIconButton(Icons.Outlined.Notifications, tr("a11y_notifications"), onNotifications, size = 44)
+                    if (notifUnread > 0) CountBadge(
+                        notifUnread, Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-4).dp), color = Color(0xFFFF3B30)
                     )
                 }
             }
         }
+        item { AlarmPrompt() }      // Step 33: optional daily-alarm prompt (Yes / No / X); shows nothing once answered
+        item { StoriesRow(storyGroups, onAddStory) { onOpenStory(storyGroups, it) } }
+        item { // For you / Following as two chips, refresh at the end
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SmallChip(tr("for_you"), { tab = "for_you" }, active = tab == "for_you")
+                SmallChip(tr("following"), { tab = "following" }, active = tab == "following")
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.Filled.Refresh, tr("a11y_refresh"), tint = Ink.copy(.7f),
+                    modifier = Modifier.size(36.dp).clip(CircleShape).clickable { reload++ }.padding(7.dp)
+                )
+            }
+        }
         notice?.let { item {   // Step 35: a feed failure always offers "Try again" (never a silent empty feed)
             Column {
-                Text(it, color = Color(0xFFFFB4A8), fontSize = 13.sp)
-                Text(tr("try_again"), color = Teal, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                Text(it, color = ErrorInk, fontSize = 13.sp)
+                Text(tr("try_again"), color = Accent, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(50)).clickable { notice = null; reload++ }
                         .padding(horizontal = 4.dp, vertical = 6.dp))
             }
@@ -244,7 +240,7 @@ fun HomeScreen(
         if (!loading && posts.isEmpty() && notice == null) item {
             Text(
                 if (tab == "following") tr("empty_following") else tr("empty_foryou"),
-                color = Color.White.copy(.7f), modifier = Modifier.padding(24.dp)
+                color = Ink.copy(.7f), modifier = Modifier.padding(24.dp)
             )
         }
         items(posts, key = { it.id }) { p ->
@@ -255,98 +251,132 @@ fun HomeScreen(
             }
         }
         if (loading) item {
-            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Teal) }
+            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
         }
     }
 }
 
+/** One icon with its number (♥ 1.2K, 💬 128). */
 @Composable
-private fun SegTab(text: String, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
-    Box(
-        modifier.clip(RoundedCornerShape(50)).background(if (active) PaperWhite else Color.Transparent)
-            .clickable(onClick = onClick).padding(vertical = 11.dp),
-        contentAlignment = Alignment.Center
+private fun PostAction(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, count: Int?, tint: Color, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text, color = if (active) Navy else Color.White.copy(.85f), fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Icon(icon, desc, tint = tint, modifier = Modifier.size(24.dp))
+        if (count != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(compactCount(count), color = if (tint == Ink) Ink.copy(.75f) else tint, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        }
     }
 }
 
+/** A post like the new design: author line on top, the photo with rounded corners, the caption, then ♥ 💬 ➤ and the bookmark. */
 @Composable
 fun PostCard(p: Post, ctl: PostController, onComments: (Post) -> Unit) {
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
+    var expanded by remember(p.id) { mutableStateOf(false) }
+    var captionCut by remember(p.id) { mutableStateOf(false) }
+    val openProfile = LocalOpenProfile.current
 
-    GlassPanel(Modifier.fillMaxWidth().height(430.dp), corner = 28) {
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF2A6FD8), Color(0xFF0F2150)))))
-        p.imageUrl?.let { AsyncImage(it, p.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
-        // dark scrim so the caption and chips stay readable on any photo
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(
-            0.55f to Color.Transparent, 1f to Color(0x990B1220))))
-
-        // author bar: frosted pill with a ringed avatar, name, small grey line and the soft-white Follow pill (reference)
-        Row(
-            Modifier.padding(12.dp).fillMaxWidth().align(Alignment.TopCenter)
-                .clip(RoundedCornerShape(50)).background(ControlFill)
-                .border(1.dp, ControlBorder, RoundedCornerShape(50)).padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val openProfile = LocalOpenProfile.current
-            Box(Modifier.border(1.5.dp, Color.White.copy(.7f), CircleShape).padding(2.dp).clickable { openProfile(p.username) }) { Avatar(p.avatarUrl, 38) }
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f).clickable { openProfile(p.username) }) {
-                Text(p.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(timeAgo(p.createdAt) + if (p.audience == "followers") " · Followers" else "",
-                    color = Color.White.copy(.7f), fontSize = 11.sp)
-            }
-            when (p.followStatus) {
-                "self" -> {}
-                "none" -> PillButton("+ " + tr("follow"), { ctl.toggleFollow(p) })
-                "pending" -> PillButton(tr("requested"), { ctl.toggleFollow(p) }, filled = false)
-                else -> PillButton(tr("following"), { ctl.toggleFollow(p) }, filled = false)
-            }
-            Box {
-                GlassIconButton(Icons.Filled.MoreVert, tr("a11y_more"), { menu = true }, size = 36, onMedia = true)
-                DropdownMenu(menu, { menu = false }) {
-                    if (p.mine) DropdownMenuItem(text = { Text(tr("delete_post")) }, onClick = { menu = false; ctl.delete(p) })
-                    else {
-                        if (ctl.feedControls) {
-                            DropdownMenuItem(text = { Text(tr("not_interested")) }, onClick = { menu = false; ctl.notInterested(p) })
-                            DropdownMenuItem(text = { Text(tr("hide_creator")) }, onClick = { menu = false; ctl.hideCreator(p) })
-                        }
-                        listOf("Spam", "Harassment", "Inappropriate content").forEach { r ->
-                            DropdownMenuItem(text = { Text(trf("report_fmt", reasonLabel(r))) }, onClick = { menu = false; ctl.report(p, r) })
+    GlassPanel(Modifier.fillMaxWidth(), corner = 22) {
+        Column(Modifier.padding(12.dp)) {
+            // author line: avatar, name, "2h ago" with a globe (public) or a people icon (followers only), Follow chip, menu
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.clip(CircleShape).clickable { openProfile(p.username) }) { Avatar(p.avatarUrl, 42) }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f).clickable { openProfile(p.username) }) {
+                    Text(p.username, color = Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(timeAgo(p.createdAt), color = Ink.copy(.55f), fontSize = 12.sp)
+                        Spacer(Modifier.width(5.dp))
+                        Icon(
+                            if (p.audience == "followers") Icons.Outlined.Group else Icons.Outlined.Public,
+                            if (p.audience == "followers") tr("followers_only") else tr("public"),
+                            tint = Ink.copy(.55f), modifier = Modifier.size(13.dp)
+                        )
+                    }
+                }
+                when (p.followStatus) {
+                    "self" -> {}
+                    "none" -> SmallChip("+ " + tr("follow"), { ctl.toggleFollow(p) })
+                    "pending" -> SmallChip(tr("requested"), { ctl.toggleFollow(p) }, active = false)
+                    else -> SmallChip(tr("following"), { ctl.toggleFollow(p) }, active = false)
+                }
+                Box {
+                    Icon(
+                        Icons.Filled.MoreHoriz, tr("a11y_more"), tint = Ink.copy(.7f),
+                        modifier = Modifier.padding(start = 4.dp).size(36.dp).clip(CircleShape).clickable { menu = true }.padding(6.dp)
+                    )
+                    DropdownMenu(menu, { menu = false }) {
+                        if (p.mine) DropdownMenuItem(text = { Text(tr("delete_post")) }, onClick = { menu = false; ctl.delete(p) })
+                        else {
+                            if (ctl.feedControls) {
+                                DropdownMenuItem(text = { Text(tr("not_interested")) }, onClick = { menu = false; ctl.notInterested(p) })
+                                DropdownMenuItem(text = { Text(tr("hide_creator")) }, onClick = { menu = false; ctl.hideCreator(p) })
+                            }
+                            listOf("Spam", "Harassment", "Inappropriate content").forEach { r ->
+                                DropdownMenuItem(text = { Text(trf("report_fmt", reasonLabel(r))) }, onClick = { menu = false; ctl.report(p, r) })
+                            }
                         }
                     }
                 }
             }
-        }
 
-        Column(Modifier.align(Alignment.BottomStart).padding(14.dp)) {
-            if (p.caption.isNotBlank()) {
-                Text(p.caption, color = Color.White, fontSize = 14.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            // the photo
+            if (p.imageUrl != null) {
                 Spacer(Modifier.height(10.dp))
-            }
-            // Reaction row like the reference: ♥ 😮 😂 😢
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                ReactionChip(if (p.liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                    p.likeCount.toString(), if (p.liked) LikeRed else Color.White, onMedia = true) { ctl.toggleLike(p) }
-                REACTION_KINDS.forEach { (kind, emoji) ->
-                    val r = p.reactions[kind] ?: com.sociax.app.data.React()
-                    EmojiChip(emoji, r.count, r.mine) { ctl.toggleReaction(p, kind) }
+                Box(Modifier.fillMaxWidth().aspectRatio(1.25f).clip(RoundedCornerShape(16.dp)).background(FieldFill)) {
+                    AsyncImage(p.imageUrl, p.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                ReactionChip(Icons.Outlined.ChatBubbleOutline, p.commentCount.toString(), onMedia = true) { onComments(p) }
-                GlassIconButton(Icons.Outlined.Send, tr("a11y_share"), {
+
+            // the caption: two lines, then "more" (tap again for "less")
+            if (p.caption.isNotBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    p.caption, color = Ink, fontSize = 14.sp,
+                    maxLines = if (expanded) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis,
+                    onTextLayout = { if (!expanded) captionCut = it.hasVisualOverflow }
+                )
+                if (captionCut || expanded) {
+                    Text(
+                        if (expanded) tr("show_less") else tr("read_more"),
+                        color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                        modifier = Modifier.clickable { expanded = !expanded }
+                    )
+                }
+            }
+
+            // ♥ 1.2K   💬 128   ➤                                  🔖
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PostAction(
+                    if (p.liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder, tr("a11y_heart"),
+                    p.likeCount, if (p.liked) Accent else Ink
+                ) { ctl.toggleLike(p) }
+                PostAction(Icons.Outlined.ChatBubbleOutline, tr("comments"), p.commentCount, Ink) { onComments(p) }
+                PostAction(Icons.Outlined.Send, tr("a11y_share"), null, Ink) {
                     val send = Intent(Intent.ACTION_SEND).apply {
                         type = "text/plain"; putExtra(Intent.EXTRA_TEXT, "${p.username} on Sociax: ${p.caption}")
                     }
                     ctl.shared(p)
                     context.startActivity(Intent.createChooser(send, "Share"))
-                }, size = 34, onMedia = true)
+                }
                 Spacer(Modifier.weight(1f))
-                GlassIconButton(if (p.saved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, "Save", { ctl.toggleSave(p) }, size = 36, onMedia = true)
+                Icon(
+                    if (p.saved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, tr("a11y_save"),
+                    tint = if (p.saved) Accent else Ink,
+                    modifier = Modifier.size(36.dp).clip(CircleShape).clickable { ctl.toggleSave(p) }.padding(6.dp)
+                )
+            }
+            // emoji reactions (😮 😂 😢): small chips under the actions
+            Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                REACTION_KINDS.forEach { (kind, emoji) ->
+                    val r = p.reactions[kind] ?: com.sociax.app.data.React()
+                    EmojiChip(emoji, r.count, r.mine) { ctl.toggleReaction(p, kind) }
+                }
             }
         }
     }

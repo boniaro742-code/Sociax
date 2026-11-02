@@ -15,8 +15,13 @@ services:
       # Firebase service-account file: add it in Render > Environment > Secret Files with exactly this name.
       - key: GOOGLE_APPLICATION_CREDENTIALS
         value: /etc/secrets/firebase-service-account.json
-      - key: CLOUDINARY_CLOUD_NAME
-        value: blquould
+      - key: CLOUDINARY_CLOUD_NAME   # Step 54: no value written here any more (a Blueprint sync used to put the OLD cloud name back); keep the one in the dashboard
+        sync: false
+      # Step 54 (plan v3.9.2): saved copy of the database on Cloudinary, so accounts survive restarts / deploys (see backend/durable.py)
+      - key: SOCIAX_BACKUP
+        value: cloudinary
+      - key: BACKUP_MIN_INTERVAL
+        value: "45"
       - key: CLOUDINARY_API_KEY
         sync: false
       - key: CLOUDINARY_API_SECRET

@@ -22,7 +22,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.android.gms.ads.nativead.MediaView
 import com.google.android.gms.ads.nativead.NativeAdView
 import com.sociax.app.data.LoadedAd
-import com.sociax.app.ui.theme.CinematicBackground
+import com.sociax.app.ui.theme.MediaBackdrop
 import com.sociax.app.ui.theme.bottomBarClearance
 import com.sociax.app.ui.theme.tr
 
@@ -35,7 +35,7 @@ import com.sociax.app.ui.theme.tr
 @Composable
 fun AdPage(loaded: LoadedAd) {
     val label = tr("ad_label")
-    Box(Modifier.fillMaxSize().background(CinematicBackground)) {
+    Box(Modifier.fillMaxSize().background(MediaBackdrop)) {
         AndroidView(
             modifier = Modifier.fillMaxSize().statusBarsPadding().padding(top = 56.dp, bottom = bottomBarClearance()),
             factory = { ctx -> buildAdView(ctx) },

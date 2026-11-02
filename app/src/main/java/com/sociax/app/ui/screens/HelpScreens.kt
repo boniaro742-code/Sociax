@@ -40,18 +40,18 @@ fun HelpLegalSection(api: ApiClient?) {
         val body = when (d) { HelpDoc.HELP -> tr("help_body"); HelpDoc.TERMS -> tr("terms_body"); HelpDoc.PRIVACY -> tr("privacy_policy_body") }
         AlertDialog(
             onDismissRequest = { doc = null },
-            containerColor = Color(0xFF121C2E),
-            title = { Text(title, color = Color.White, fontWeight = FontWeight.Bold) },
+            containerColor = CardFill,
+            title = { Text(title, color = Ink, fontWeight = FontWeight.Bold) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text(body, color = Color.White.copy(.85f), fontSize = 14.sp)
+                    Text(body, color = Ink.copy(.85f), fontSize = 14.sp)
                     if (d != HelpDoc.HELP) {
                         Spacer(Modifier.height(12.dp))
-                        Text(tr("legal_draft_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                        Text(tr("legal_draft_note"), color = Ink.copy(.6f), fontSize = 12.sp)
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { doc = null }) { Text(tr("close"), color = Teal, fontWeight = FontWeight.Bold) } }
+            confirmButton = { TextButton(onClick = { doc = null }) { Text(tr("close"), color = Accent, fontWeight = FontWeight.Bold) } }
         )
     }
     if (reporting && api != null) ReportProblemDialog(api) { reporting = false }
@@ -66,32 +66,32 @@ private fun ReportProblemDialog(api: ApiClient, onDone: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDone() },
-        containerColor = Color(0xFF121C2E),
-        title = { Text(tr("report_problem"), color = Color.White, fontWeight = FontWeight.Bold) },
+        containerColor = CardFill,
+        title = { Text(tr("report_problem"), color = Ink, fontWeight = FontWeight.Bold) },
         text = {
             Column {
                 if (sent) {
-                    Text(tr("report_problem_sent"), color = Color.White.copy(.85f))
+                    Text(tr("report_problem_sent"), color = Ink.copy(.85f))
                 } else {
-                    Text(tr("report_problem_hint"), color = Color.White.copy(.7f), fontSize = 13.sp)
+                    Text(tr("report_problem_hint"), color = Ink.copy(.7f), fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
                         value = text, onValueChange = { if (it.length <= 1000) text = it },
                         modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 6,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-                            focusedBorderColor = Teal, unfocusedBorderColor = InsetBorder,
+                            focusedTextColor = Ink, unfocusedTextColor = Ink,
+                            focusedBorderColor = Accent, unfocusedBorderColor = InsetBorder,
                             focusedContainerColor = InsetFill, unfocusedContainerColor = InsetFill,
-                            cursorColor = Color.White
+                            cursorColor = Ink
                         )
                     )
-                    error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
+                    error?.let { Text(it, color = ErrorInk, fontSize = 13.sp) }
                 }
             }
         },
         confirmButton = {
             if (sent) {
-                TextButton(onClick = onDone) { Text(tr("close"), color = Teal, fontWeight = FontWeight.Bold) }
+                TextButton(onClick = onDone) { Text(tr("close"), color = Accent, fontWeight = FontWeight.Bold) }
             } else {
                 TextButton(enabled = !busy && text.trim().length >= 10, onClick = {
                     busy = true; error = null
@@ -101,11 +101,11 @@ private fun ReportProblemDialog(api: ApiClient, onDone: () -> Unit) {
                         catch (e: Exception) { error = errText(e) }
                         busy = false
                     }
-                }) { Text(tr("report_problem_send"), color = Teal, fontWeight = FontWeight.Bold) }
+                }) { Text(tr("report_problem_send"), color = Accent, fontWeight = FontWeight.Bold) }
             }
         },
         dismissButton = {
-            if (!sent) TextButton(enabled = !busy, onClick = onDone) { Text(tr("cancel"), color = Color.White) }
+            if (!sent) TextButton(enabled = !busy, onClick = onDone) { Text(tr("cancel"), color = Ink) }
         }
     )
 }
@@ -117,7 +117,7 @@ fun GoogleAccountRow() {
         try { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email } catch (e: Exception) { null }
     }
     if (!email.isNullOrBlank()) {
-        Text(tr("google_account"), color = Color.White, fontWeight = FontWeight.SemiBold)
-        Text(email, color = Color.White.copy(.7f), fontSize = 13.sp)
+        Text(tr("google_account"), color = Ink, fontWeight = FontWeight.SemiBold)
+        Text(email, color = Ink.copy(.7f), fontSize = 13.sp)
     }
 }

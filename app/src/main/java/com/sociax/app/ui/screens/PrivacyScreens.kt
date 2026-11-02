@@ -40,8 +40,8 @@ internal fun NavRow(label: String, onClick: () -> Unit) {
         Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-        Icon(Icons.Filled.ChevronRight, null, tint = Color.White.copy(.7f))
+        Text(label, color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        Icon(Icons.Filled.ChevronRight, null, tint = Ink.copy(.7f))
     }
 }
 
@@ -49,8 +49,8 @@ internal fun NavRow(label: String, onClick: () -> Unit) {
 @Composable
 internal fun ChoiceGroup(title: String, subtitle: String, options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {
-        Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
-        Text(subtitle, color = Color.White.copy(.6f), fontSize = 12.sp)
+        Text(title, color = Ink, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, color = Ink.copy(.6f), fontSize = 12.sp)
         Spacer(Modifier.height(4.dp))
         options.forEach { (value, label) ->
             Row(
@@ -58,8 +58,8 @@ internal fun ChoiceGroup(title: String, subtitle: String, options: List<Pair<Str
                     .padding(horizontal = 4.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(label, color = Color.White, modifier = Modifier.weight(1f))
-                if (value == selected) Icon(Icons.Filled.Check, null, tint = Teal)
+                Text(label, color = Ink, modifier = Modifier.weight(1f))
+                if (value == selected) Icon(Icons.Filled.Check, null, tint = Accent)
             }
         }
     }
@@ -75,8 +75,8 @@ fun PrivacySection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit, onBlocke
         if (me != null && api != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(tr("private_acc"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(tr("private_acc_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                    Text(tr("private_acc"), color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text(tr("private_acc_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
                 }
                 Switch(
                     isPrivate,
@@ -89,16 +89,16 @@ fun PrivacySection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit, onBlocke
                             catch (e: Exception) { isPrivate = old; error = errText(e) }
                         }
                     },
-                    colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                    colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
                 )
             }
-            error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
+            error?.let { Text(it, color = ErrorInk, fontSize = 13.sp) }
             // Step 22: "Follow me first" - messages from people who do not follow me wait (hidden, not read) until they follow
             var followFirst by remember(me.followFirst) { mutableStateOf(me.followFirst) }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) {
                 Column(Modifier.weight(1f)) {
-                    Text(tr("follow_first_setting"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(tr("follow_first_setting_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                    Text(tr("follow_first_setting"), color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text(tr("follow_first_setting_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
                 }
                 Switch(
                     followFirst,
@@ -111,15 +111,15 @@ fun PrivacySection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit, onBlocke
                             catch (e: Exception) { followFirst = old; error = errText(e) }
                         }
                     },
-                    colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                    colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
                 )
             }
             // Step 25: Online / last seen. Reciprocal: if it is off, I do not see other people's status either.
             var showLastSeen by remember(me.showLastSeen) { mutableStateOf(me.showLastSeen) }
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) {
                 Column(Modifier.weight(1f)) {
-                    Text(tr("last_seen_setting"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(tr("last_seen_setting_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                    Text(tr("last_seen_setting"), color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text(tr("last_seen_setting_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
                 }
                 Switch(
                     showLastSeen,
@@ -132,7 +132,7 @@ fun PrivacySection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit, onBlocke
                             catch (e: Exception) { showLastSeen = old; error = errText(e) }
                         }
                     },
-                    colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                    colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
                 )
             }
             // Step 19: who may start a chat with me / add me to a group (checked on the server)
@@ -169,15 +169,15 @@ fun DeleteAccountRow(api: ApiClient?, onDeleted: () -> Unit) {
     var ask by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    Text(tr("delete_account_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
-    error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
+    Text(tr("delete_account_note"), color = Ink.copy(.6f), fontSize = 12.sp)
+    error?.let { Text(it, color = ErrorInk, fontSize = 13.sp) }
     PillButton(tr("delete_account"), { if (api != null && !busy) ask = true }, filled = false)
     if (ask) {
         AlertDialog(
             onDismissRequest = { if (!busy) ask = false },
-            containerColor = Color(0xFF121C2E),
-            title = { Text(tr("delete_confirm_title"), color = Color.White, fontWeight = FontWeight.Bold) },
-            text = { Text(tr("delete_confirm_body"), color = Color.White.copy(.8f)) },
+            containerColor = CardFill,
+            title = { Text(tr("delete_confirm_title"), color = Ink, fontWeight = FontWeight.Bold) },
+            text = { Text(tr("delete_confirm_body"), color = Ink.copy(.8f)) },
             confirmButton = {
                 TextButton(enabled = !busy, onClick = {
                     busy = true
@@ -187,9 +187,9 @@ fun DeleteAccountRow(api: ApiClient?, onDeleted: () -> Unit) {
                         catch (e: Exception) { error = errText(e); ask = false }
                         busy = false
                     }
-                }) { Text(tr("delete_forever"), color = Color(0xFFFF8A8A), fontWeight = FontWeight.Bold) }
+                }) { Text(tr("delete_forever"), color = ErrorInk, fontWeight = FontWeight.Bold) }
             },
-            dismissButton = { TextButton(enabled = !busy, onClick = { ask = false }) { Text(tr("cancel"), color = Color.White) } }
+            dismissButton = { TextButton(enabled = !busy, onClick = { ask = false }) { Text(tr("cancel"), color = Ink) } }
         )
     }
 }
@@ -209,10 +209,10 @@ fun BlockedUsersScreen(api: ApiClient, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(16.dp)) {
         TopBar(tr("blocked_users"), onBack)
-        Text(tr("blocked_note"), color = Color.White.copy(.7f), fontSize = 13.sp, modifier = Modifier.padding(bottom = 10.dp))
-        error?.let { Text(it, color = Color(0xFFFF8A8A)) }
-        if (loading) CircularProgressIndicator(color = Teal)
-        else if (users.isEmpty()) Text(tr("no_blocked"), color = Color.White.copy(.7f))
+        Text(tr("blocked_note"), color = Ink.copy(.7f), fontSize = 13.sp, modifier = Modifier.padding(bottom = 10.dp))
+        error?.let { Text(it, color = ErrorInk) }
+        if (loading) CircularProgressIndicator(color = Accent)
+        else if (users.isEmpty()) Text(tr("no_blocked"), color = Ink.copy(.7f))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(users, key = { it.username }) { u ->
                 GlassPanel(Modifier.fillMaxWidth()) {
@@ -220,8 +220,8 @@ fun BlockedUsersScreen(api: ApiClient, onBack: () -> Unit) {
                         Avatar(u.avatarUrl, 44)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
-                            Text(u.displayName, color = Color.White.copy(.7f), fontSize = 12.sp)
+                            Text(u.username, color = Ink, fontWeight = FontWeight.Bold)
+                            Text(u.displayName, color = Ink.copy(.7f), fontSize = 12.sp)
                         }
                         PillButton(tr("unblock_user"), {
                             scope.launch {
@@ -254,9 +254,9 @@ fun SavedPostsScreen(api: ApiClient, onBack: () -> Unit, onOpenPost: (Post) -> U
 
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         TopBar(tr("saved_posts"), onBack)
-        error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
-        if (loading) CircularProgressIndicator(color = Teal)
-        else if (posts.isEmpty()) Text(tr("no_saved"), color = Color.White.copy(.7f))
+        error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+        if (loading) CircularProgressIndicator(color = Accent)
+        else if (posts.isEmpty()) Text(tr("no_saved"), color = Ink.copy(.7f))
         else {
             PostsGrid(posts, onOpenPost)
             if (more) {
@@ -271,7 +271,7 @@ fun SavedPostsScreen(api: ApiClient, onBack: () -> Unit, onOpenPost: (Post) -> U
                 }, filled = false)
             }
             Spacer(Modifier.height(10.dp))
-            Text(tr("saved_note"), color = Color.White.copy(.5f), fontSize = 12.sp)
+            Text(tr("saved_note"), color = Ink.copy(.5f), fontSize = 12.sp)
         }
         Spacer(Modifier.height(24.dp))
     }

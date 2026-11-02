@@ -19,6 +19,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.verticalScroll
@@ -128,7 +129,7 @@ private fun msg(e: Exception) =
 @Composable
 fun ShortVideoScreen(
     api: ApiClient, state: ShortsState, ads: AdsController, onCreate: () -> Unit, onComments: (ShortVideo) -> Unit,
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {}, onSearch: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
@@ -252,13 +253,13 @@ fun ShortVideoScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(CinematicBackground)) {
+    Box(Modifier.fillMaxSize().background(MediaBackdrop)) {
         if (state.items.isEmpty()) {
             Column(
                 Modifier.fillMaxSize().padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
             ) {
-                if (loading) CircularProgressIndicator(color = Teal)
+                if (loading) CircularProgressIndicator(color = Accent)
                 else {
                     Text(notice ?: tr("no_shorts"),
                         color = Color.White.copy(.8f))
@@ -334,15 +335,22 @@ fun ShortVideoScreen(
             }
         }
 
-        // top bar like the reference: round frosted back button (to Home) on the left, round + (upload) on the right
-        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.KeyboardArrowLeft, tr("a11y_back"), onBack, size = 40, onMedia = true)
+        // top bar (new design): upload (+) on the left, "For you" with its underline in the middle, refresh and search on the right.
+        // (Step 59: there is no "Following" tab: the server has no following-only feed for short videos, so none is shown.)
+        Column(Modifier.fillMaxWidth().statusBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)
+                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(tr("for_you"), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Box(Modifier.padding(top = 4.dp).width(28.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White))
+                }
+                GlassIconButton(Icons.Filled.Refresh, tr("a11y_refresh"), { state.reset() }, size = 40, onMedia = true)   // Step 40: a new ranking
+                Spacer(Modifier.width(8.dp))
+                GlassIconButton(Icons.Filled.Search, tr("search"), onSearch, size = 40, onMedia = true)
+            }
             notice?.takeIf { state.items.isNotEmpty() }?.let {
-                Text(it, color = Color(0xFFFFB4A8), fontSize = 12.sp, modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
-            } ?: Spacer(Modifier.weight(1f))
-            GlassIconButton(Icons.Filled.Refresh, tr("a11y_refresh"), { state.reset() }, size = 40, onMedia = true)   // Step 40: a new ranking
-            Spacer(Modifier.width(8.dp))
-            GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)
+                Text(it, color = Color(0xFFFFB4A8), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
+            }
         }
     }
 }
@@ -377,7 +385,7 @@ private fun ShortPage(
         if (active && mayPlay && url != null) ShortPlayer(url, playing = !paused, Modifier.fillMaxSize(), onWatched = onWatched)
 
         if (!mayPlay || paused) {
-            Box(Modifier.align(Alignment.Center).size(72.dp).clip(CircleShape).background(ControlFill),
+            Box(Modifier.align(Alignment.Center).size(72.dp).clip(CircleShape).background(MediaGlass),
                 contentAlignment = Alignment.Center) {
                 Icon(Icons.Filled.PlayArrow, tr("a11y_play"), tint = Color.White, modifier = Modifier.size(40.dp))
             }
@@ -386,14 +394,26 @@ private fun ShortPage(
         // dark scrim so text stays readable on any video
         Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.6f to Color.Transparent, 1f to Color(0xCC0B1220))))
 
-        // right action rail like the reference: comments, save, share, more (the heart now sits in the reaction row)
+        // right action rail (new design): the author's photo with a purple "+" (follow), heart, comments, save, share, more
         Column(
-            Modifier.align(Alignment.CenterEnd).padding(end = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)
+            Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 16.dp + bottomBarClearance()),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Rail(Icons.Outlined.ChatBubbleOutline, if (s.commentsEnabled) s.commentCount.toString() else "Off",
+            Box(contentAlignment = Alignment.BottomCenter) {
+                Box(Modifier.border(2.dp, Color.White, CircleShape).padding(2.dp)) { Avatar(s.avatarUrl, 44) }
+                if (s.followStatus == "none") {
+                    Box(
+                        Modifier.offset(y = 9.dp).size(22.dp).clip(CircleShape).background(Accent).clickable(onClick = onFollow),
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Filled.Add, tr("follow"), tint = OnAccent, modifier = Modifier.size(15.dp)) }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Rail(if (s.liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder, compactCount(s.likeCount),
+                if (s.liked) LikeRed else Color.White, onLike)
+            Rail(Icons.Outlined.ChatBubbleOutline, if (s.commentsEnabled) compactCount(s.commentCount) else "Off",
                 Color.White, onComments)
-            Rail(if (s.saved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, s.saveCount.toString(),
+            Rail(if (s.saved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, compactCount(s.saveCount),
                 Color.White, onSave)
             Rail(Icons.Filled.Share, "", Color.White) {
                 val send = Intent(Intent.ACTION_SEND).apply {
@@ -417,52 +437,45 @@ private fun ShortPage(
             }
         }
 
-        // bottom-left: author, follow, caption
-        // (bottom padding leaves room for the floating tab bar, like the reaction row in the reference)
+        // bottom-left: author name, time, caption, emoji reactions
+        // (bottom padding leaves room for the docked tab bar)
         Column(Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 76.dp, bottom = 10.dp + bottomBarClearance())) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.border(1.5.dp, Color.White.copy(.7f), CircleShape).padding(2.dp)) { Avatar(s.avatarUrl, 40) }
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f, fill = false)) {
-                    Text(s.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(timeAgo(s.createdAt) + if (s.audience == "followers") " · Followers" else "",
-                        color = Color.White.copy(.7f), fontSize = 11.sp)
-                }
-                Spacer(Modifier.width(10.dp))
+                Text(s.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Spacer(Modifier.width(8.dp))
+                Text(timeAgo(s.createdAt) + if (s.audience == "followers") " · Followers" else "",
+                    color = Color.White.copy(.7f), fontSize = 12.sp, maxLines = 1)
                 when (s.followStatus) {
-                    "self" -> {}
-                    "none" -> PillButton("+ " + tr("follow"), onFollow)
-                    "pending" -> PillButton(tr("requested"), onFollow, filled = false)
-                    else -> PillButton(tr("following"), onFollow, filled = false)
+                    "pending" -> { Spacer(Modifier.width(8.dp)); SmallChip(tr("requested"), onFollow, active = false) }
+                    "self", "none" -> {}
+                    else -> { Spacer(Modifier.width(8.dp)); SmallChip(tr("following"), onFollow, active = false) }
                 }
             }
             if (s.caption.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    s.caption, color = Color.White.copy(.92f), fontSize = 13.sp,
+                    s.caption, color = Color.White.copy(.92f), fontSize = 14.sp,
                     maxLines = if (expanded) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis,
                     onTextLayout = { if (!expanded) captionCut = it.hasVisualOverflow }
                 )
                 if (captionCut || expanded) {
                     Text(
                         if (expanded) tr("show_less") else tr("read_more"),
-                        color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                        color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
                         modifier = Modifier.clickable { expanded = !expanded }
                     )
                 }
             }
-            // Reaction row like the reference: heart + 😮 😂 😢 with counts
+            // emoji reactions 😮 😂 😢 with counts (the heart is in the right rail)
             Spacer(Modifier.height(10.dp))
             Row(
                 Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically
             ) {
-                ReactionChip(if (s.liked) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                    s.likeCount.toString(), if (s.liked) LikeRed else Color.White, onMedia = true, onClick = onLike)
                 REACTION_KINDS.forEach { (kind, emoji) ->
                     val r = s.reactions[kind] ?: React()
-                    EmojiChip(emoji, r.count, r.mine) { onReact(kind) }
+                    EmojiChip(emoji, r.count, r.mine, onMedia = true) { onReact(kind) }
                 }
             }
         }
@@ -533,7 +546,7 @@ private fun ShortPlayer(url: String, playing: Boolean, modifier: Modifier = Modi
             modifier = Modifier.fillMaxSize()
         )
         LinearProgressIndicator(
-            progress = { progress }, color = Teal, trackColor = Color.White.copy(.2f),
+            progress = { progress }, color = Accent, trackColor = Color.White.copy(.2f),
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(2.dp)
         )
     }
@@ -671,11 +684,11 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                 GlassPanel(Modifier.fillMaxWidth().height(260.dp), corner = 28) {
                     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center) {
-                        Icon(Icons.Filled.VideoLibrary, null, tint = Teal, modifier = Modifier.size(52.dp))
+                        Icon(Icons.Filled.VideoLibrary, null, tint = Accent, modifier = Modifier.size(52.dp))
                         Spacer(Modifier.height(10.dp))
-                        Text(tr("choose_record"), color = Color.White, fontWeight = FontWeight.SemiBold)
+                        Text(tr("choose_record"), color = Ink, fontWeight = FontWeight.SemiBold)
                         Text(tr("max_len_note"),
-                            color = Color.White.copy(.65f), fontSize = 12.sp)
+                            color = Ink.copy(.65f), fontSize = 12.sp)
                     }
                 }
                 Spacer(Modifier.height(14.dp))
@@ -691,17 +704,17 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                     pendingCamera = uri
                     camera.launch(uri)
                 }, Modifier.fillMaxWidth(), filled = false)
-                error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
+                error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(top = 12.dp)) }
                 Spacer(Modifier.height(10.dp))
-                Text(trf("quality_line", when (prefs.uploadQuality) { "low" -> tr("ql_low"); "high" -> tr("ql_high"); else -> tr("ql_std") }), color = Color.White.copy(.55f), fontSize = 12.sp)
+                Text(trf("quality_line", when (prefs.uploadQuality) { "low" -> tr("ql_low"); "high" -> tr("ql_high"); else -> tr("ql_std") }), color = Ink.copy(.55f), fontSize = 12.sp)
             }
 
             CStage.Working, CStage.Uploading -> {
                 Column(Modifier.fillMaxWidth().padding(top = 80.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Teal)
+                    CircularProgressIndicator(color = Accent)
                     Spacer(Modifier.height(16.dp))
                     Text(if (stage == CStage.Working) tr("preparing") else tr("uploading"),
-                        color = Color.White)
+                        color = Ink)
                     Spacer(Modifier.height(20.dp))
                     PillButton(tr("cancel"), { job?.cancel(); if (stage == CStage.Uploading) stage = CStage.Preview else stage = CStage.Pick }, filled = false)
                 }
@@ -709,7 +722,7 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
 
             CStage.Preview -> {
                 val f = prepared
-                Text(tr("preview"), color = Teal, fontWeight = FontWeight.Bold)
+                Text(tr("preview"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 GlassPanel(Modifier.fillMaxWidth().height(380.dp), corner = 28) {
                     if (f != null) ClipPreview(Uri.fromFile(f), 0, null, Modifier.fillMaxSize())
@@ -717,24 +730,24 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                 if (f != null) Text(
                     // an unknown length is simply not shown (plan v3.9.1: never a made-up 0:00)
                     (if (preparedMs > 0) "${mmss(preparedMs)} · " else "") + "${"%.1f".format(f.length() / 1048576.0)} MB",
-                    color = Color.White.copy(.65f), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
+                    color = Ink.copy(.65f), fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp))
                 Spacer(Modifier.height(12.dp))
                 GlassField(caption, { caption = it.take(2200) }, tr("write_caption"))
                 Spacer(Modifier.height(12.dp))
-                Text(tr("who_can_watch"), color = Teal, fontWeight = FontWeight.Bold)
+                Text(tr("who_can_watch"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton(tr("public"), { followersOnly = false }, filled = !followersOnly)
                     PillButton(tr("followers_only"), { followersOnly = true }, filled = followersOnly)
                 }
                 Spacer(Modifier.height(12.dp))
-                Text(tr("comments"), color = Teal, fontWeight = FontWeight.Bold)
+                Text(tr("comments"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton(tr("on"), { commentsOn = true }, filled = commentsOn)
                     PillButton(tr("off"), { commentsOn = false }, filled = !commentsOn)
                 }
-                error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp)) }
+                error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp)) }
                 Spacer(Modifier.height(18.dp))
                 PillButton(tr("publish"), { publish() }, Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
@@ -796,9 +809,9 @@ fun SavedShortsScreen(api: ApiClient, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         TopBar(tr("saved_shorts"), onBack)
-        error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
-        if (loading) CircularProgressIndicator(color = Teal)
-        else if (shorts.isEmpty()) Text(tr("no_saved_shorts"), color = Color.White.copy(.7f))
+        error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+        if (loading) CircularProgressIndicator(color = Accent)
+        else if (shorts.isEmpty()) Text(tr("no_saved_shorts"), color = Ink.copy(.7f))
         else {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 shorts.chunked(3).forEach { row ->
@@ -806,7 +819,7 @@ fun SavedShortsScreen(api: ApiClient, onBack: () -> Unit) {
                         row.forEach { sv ->
                             Box(
                                 Modifier.weight(1f).aspectRatio(0.6f).clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-                                    .background(Color(0x22FFFFFF)).clickable { watching = sv }
+                                    .background(FieldFill).clickable { watching = sv }
                             ) {
                                 sv.posterUrl?.let { coil.compose.AsyncImage(it, sv.caption, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Crop) }
                                 Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(32.dp))
@@ -828,7 +841,7 @@ fun SavedShortsScreen(api: ApiClient, onBack: () -> Unit) {
                 }, filled = false)
             }
             Spacer(Modifier.height(10.dp))
-            Text(tr("saved_shorts_note"), color = Color.White.copy(.5f), fontSize = 12.sp)
+            Text(tr("saved_shorts_note"), color = Ink.copy(.5f), fontSize = 12.sp)
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -841,7 +854,7 @@ private fun SavedShortPlayer(s: ShortVideo, dataSaver: Boolean, onClose: () -> U
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (url != null) ShortPlayer(url, playing = true, modifier = Modifier.fillMaxSize())
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose, onMedia = true)
             Spacer(Modifier.weight(1f))
             PillButton(tr("remove_saved"), onUnsave, filled = false)
         }
@@ -859,7 +872,7 @@ fun SearchShortPlayer(s: ShortVideo, dataSaver: Boolean, onClose: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (url != null) ShortPlayer(url, playing = true, modifier = Modifier.fillMaxSize())
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose, onMedia = true)
         }
         Column(Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(16.dp)) {
             Text(s.username, color = Color.White, fontWeight = FontWeight.Bold)

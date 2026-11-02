@@ -22,13 +22,19 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -46,7 +52,7 @@ internal fun TopBar(title: String, onBack: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack)
         Spacer(Modifier.width(12.dp))
-        Text(title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text(title, color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -72,10 +78,10 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
         GlassPanel(Modifier.fillMaxWidth().height(320.dp), corner = 28) {
             if (uri != null) AsyncImage(uri, tr("a11y_selected_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(Icons.Filled.AddPhotoAlternate, null, tint = Teal, modifier = Modifier.size(48.dp))
+                Icon(Icons.Filled.AddPhotoAlternate, null, tint = Accent, modifier = Modifier.size(48.dp))
                 Spacer(Modifier.height(8.dp))
-                Text(tr("choose_photo"), color = Color.White)
-                Text(tr("videos_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                Text(tr("choose_photo"), color = Ink)
+                Text(tr("videos_note"), color = Ink.copy(.6f), fontSize = 12.sp)
             }
         }
         Spacer(Modifier.height(10.dp))
@@ -89,9 +95,9 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
             PillButton(tr("public"), { followersOnly = false }, filled = !followersOnly)
             PillButton(tr("followers_only"), { followersOnly = true }, filled = followersOnly)
         }
-        error?.let { Text(it, color = Color(0xFFFF8A8A), modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp) }
+        error?.let { Text(it, color = ErrorInk, modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp) }
         Spacer(Modifier.height(20.dp))
-        if (busy) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.CenterHorizontally))
+        if (busy) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.CenterHorizontally))
         else PillButton(tr("post_btn"), {
             val chosen = uri ?: run { error = errPick; return@PillButton }
             scope.launch {
@@ -139,7 +145,7 @@ fun CommentsScaffold(
     val scope = rememberCoroutineScope()
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
     var allowed by remember { mutableStateOf(true) }
-    var text by remember { mutableStateOf("") }
+    var text by rememberSaveable(key) { mutableStateOf("") }          // Step 56: the unsent comment survives rotation
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -150,12 +156,21 @@ fun CommentsScaffold(
     }
     LaunchedEffect(key) { reload() }
 
+    fun submit() {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        scope.launch {
+            try { send(t); text = ""; reload(); onChanged() }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
+        }
+    }
+
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(16.dp)) {
         TopBar(tr("comments"), onBack)
         Box(Modifier.weight(1f)) {
-            if (loading) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.Center))
-            else if (!allowed) Text(tr("comments_off_video"), color = Color.White.copy(.7f))
-            else if (comments.isEmpty()) Text(tr("no_comments"), color = Color.White.copy(.7f))
+            if (loading) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.Center))
+            else if (!allowed) Text(tr("comments_off_video"), color = Ink.copy(.7f))
+            else if (comments.isEmpty()) Text(tr("no_comments"), color = Ink.copy(.7f))
             else LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(comments, key = { it.id }) { c ->
                     Row(verticalAlignment = Alignment.Top) {
@@ -163,35 +178,21 @@ fun CommentsScaffold(
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Row {
-                                Text(c.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(c.username, color = Ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 Spacer(Modifier.width(8.dp))
-                                Text(timeAgo(c.createdAt), color = Color.White.copy(.6f), fontSize = 12.sp)
+                                Text(timeAgo(c.createdAt), color = Ink.copy(.6f), fontSize = 12.sp)
                             }
-                            Text(c.text, color = Color.White.copy(.9f), fontSize = 14.sp)
+                            Text(c.text, color = Ink.copy(.9f), fontSize = 14.sp)
                         }
                     }
                 }
             }
         }
-        error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
+        error?.let { Text(it, color = ErrorInk, fontSize = 13.sp) }
         if (allowed) InsetPill(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(start = 6.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                androidx.compose.material3.TextField(
-                    text, { text = it.take(500) }, Modifier.weight(1f),
-                    placeholder = { Text(tr("add_comment"), color = Color.White.copy(.6f)) },
-                    colors = androidx.compose.material3.TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                        focusedTextColor = Color.White, unfocusedTextColor = Color.White)
-                )
-                GlassIconButton(Icons.Filled.Send, tr("a11y_send"), {
-                    val t = text.trim()
-                    if (t.isEmpty()) return@GlassIconButton
-                    scope.launch {
-                        try { send(t); text = ""; reload(); onChanged() }
-                        catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
-                    }
-                })
+                ComposerField(text, { text = it.take(500) }, tr("add_comment"), { submit() }, Modifier.weight(1f))
+                GlassIconButton(Icons.Filled.Send, tr("a11y_send"), { submit() })
             }
         }
     }
@@ -201,7 +202,19 @@ fun CommentsScaffold(
 @Composable
 fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit) {
     val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }                                 // Step 56: the typed query survives rotation
+    var searchNow by remember { mutableIntStateOf(0) }                                    // Step 56: the keyboard's Search key: run now, do not wait 300 ms
+    val searchHandled = remember { intArrayOf(0) }
+    val hideKeyboard = rememberKeyboardHider()
+    // Step 56: dragging the results closes the keyboard (the text stays), like every search page.
+    val hideOnDrag = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (source == NestedScrollSource.Drag) hideKeyboard()
+                return Offset.Zero
+            }
+        }
+    }
     var users by remember { mutableStateOf<List<UserHit>>(emptyList()) }
     val posts = remember { mutableStateListOf<Post>() }
     var shortHits by remember { mutableStateOf<List<ShortVideo>>(emptyList()) }      // Step 26: public short videos
@@ -232,9 +245,10 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
         }
     }
 
-    LaunchedEffect(query) {
+    LaunchedEffect(query, searchNow) {
         if (query.trim().length < 2) { users = emptyList(); posts.clear(); shortHits = emptyList(); next = SearchNext(); shownQuery = ""; notice = null; return@LaunchedEffect }
-        delay(300) // wait until the person stops typing
+        if (searchNow != searchHandled[0]) searchHandled[0] = searchNow    // the Search key: no waiting
+        else delay(300) // wait until the person stops typing
         loading = true
         try {
             val r = api.searchAll(query.trim())
@@ -250,17 +264,25 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
         return
     }
 
+    // Step 56: the title and the search box are OUTSIDE the scrolling list. Inside it, scrolling the results away disposed the box and
+    // the keyboard closed in the middle of typing.
+    Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(start = 16.dp, top = 16.dp, end = 16.dp)) {
+        TopBar(tr("search"), onBack)
+        Spacer(Modifier.height(12.dp))
+        GlassField(                                                                      // Step 45: the server accepts 50 characters at most
+            query, { query = it.take(50) }, tr("search_all_hint"),
+            imeAction = ImeAction.Search, onAction = { searchNow++ }, clearable = true
+        )
+        Spacer(Modifier.height(12.dp))
     LazyColumn(
-        Modifier.fillMaxSize().statusBarsPadding().imePadding(), contentPadding = PaddingValues(16.dp),
+        Modifier.weight(1f).fillMaxWidth().nestedScroll(hideOnDrag), contentPadding = PaddingValues(bottom = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { TopBar(tr("search"), onBack) }
-        item { GlassField(query, { query = it.take(50) }, tr("search_all_hint")) }      // Step 45: the server accepts 50 characters at most
-        notice?.let { item { Text(it, color = Color(0xFFFFB4A8), fontSize = 13.sp) } }
-        if (loading) item { CircularProgressIndicator(color = Teal) }
+        notice?.let { item { Text(it, color = ErrorInk, fontSize = 13.sp) } }
+        if (loading) item { CircularProgressIndicator(color = Accent) }
         if (!loading && query.trim().length >= 2 && users.isEmpty() && posts.isEmpty() && shortHits.isEmpty() && notice == null)
-            item { Text(tr("no_results"), color = Color.White.copy(.7f)) }
-        if (users.isNotEmpty()) item { Text(tr("people"), color = Teal, fontWeight = FontWeight.Bold) }
+            item { Text(tr("no_results"), color = Ink.copy(.7f)) }
+        if (users.isNotEmpty()) item { Text(tr("people"), color = Accent, fontWeight = FontWeight.Bold) }
         items(users, key = { it.username }) { u ->
             var status by remember(u.username) { mutableStateOf(u.followStatus) }
             val openProfile = LocalOpenProfile.current
@@ -269,8 +291,8 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
                     Avatar(u.avatarUrl, 44, Modifier.clickable { openProfile(u.username) })
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f).clickable { openProfile(u.username) }) {
-                        Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
-                        Text(u.displayName + if (u.isPrivate) " · " + tr("private_tag") else "", color = Color.White.copy(.7f), fontSize = 12.sp)
+                        Text(u.username, color = Ink, fontWeight = FontWeight.Bold)
+                        Text(u.displayName + if (u.isPrivate) " · " + tr("private_tag") else "", color = Ink.copy(.7f), fontSize = 12.sp)
                     }
                     val label = when (status) { "accepted" -> tr("following"); "pending" -> tr("requested"); else -> "+ " + tr("follow") }
                     PillButton(label, {
@@ -283,16 +305,16 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
             }
         }
         next.users?.let { off -> item(key = "more_users") { LoadMoreButton(moreBusy) { loadMore("users", off) } } }
-        if (posts.isNotEmpty()) item { Text(tr("posts"), color = Teal, fontWeight = FontWeight.Bold) }
+        if (posts.isNotEmpty()) item { Text(tr("posts"), color = Accent, fontWeight = FontWeight.Bold) }
         items(posts, key = { "p" + it.id }) { PostCard(it, ctl, onComments) }
         next.posts?.let { off -> item(key = "more_posts") { LoadMoreButton(moreBusy) { loadMore("posts", off) } } }
-        if (shortHits.isNotEmpty()) item { Text(tr("short_videos"), color = Teal, fontWeight = FontWeight.Bold) }
+        if (shortHits.isNotEmpty()) item { Text(tr("short_videos"), color = Accent, fontWeight = FontWeight.Bold) }
         items(shortHits.chunked(3), key = { row -> "s" + row.first().id }) { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 row.forEach { sv ->
                     Box(
                         Modifier.weight(1f).aspectRatio(0.6f).clip(RoundedCornerShape(10.dp))
-                            .background(Color(0x22FFFFFF)).clickable { watching = sv }
+                            .background(FieldFill).clickable { watching = sv }
                     ) {
                         sv.posterUrl?.let { AsyncImage(it, sv.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
                         Icon(Icons.Filled.PlayArrow, null, tint = Color.White, modifier = Modifier.align(Alignment.Center).size(32.dp))
@@ -303,12 +325,13 @@ fun SearchScreen(api: ApiClient, onBack: () -> Unit, onComments: (Post) -> Unit)
         }
         next.shorts?.let { off -> item(key = "more_shorts") { LoadMoreButton(moreBusy) { loadMore("shorts", off) } } }
     }
+    }
 }
 
 @Composable
 private fun LoadMoreButton(busy: Boolean, onClick: () -> Unit) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        if (busy) CircularProgressIndicator(color = Teal) else PillButton(tr("load_more"), onClick, filled = false)
+        if (busy) CircularProgressIndicator(color = Accent) else PillButton(tr("load_more"), onClick, filled = false)
     }
 }
 
@@ -327,9 +350,9 @@ fun RequestsScreen(api: ApiClient, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(16.dp)) {
         TopBar(tr("follow_requests"), onBack)
-        error?.let { Text(it, color = Color(0xFFFF8A8A)) }
-        if (loading) CircularProgressIndicator(color = Teal)
-        else if (requests.isEmpty()) Text(tr("no_requests"), color = Color.White.copy(.7f))
+        error?.let { Text(it, color = ErrorInk) }
+        if (loading) CircularProgressIndicator(color = Accent)
+        else if (requests.isEmpty()) Text(tr("no_requests"), color = Ink.copy(.7f))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(requests, key = { it.username }) { r ->
                 GlassPanel(Modifier.fillMaxWidth()) {
@@ -337,8 +360,8 @@ fun RequestsScreen(api: ApiClient, onBack: () -> Unit) {
                         Avatar(r.avatarUrl, 44)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(r.username, color = Color.White, fontWeight = FontWeight.Bold)
-                            Text(r.displayName, color = Color.White.copy(.7f), fontSize = 12.sp)
+                            Text(r.username, color = Ink, fontWeight = FontWeight.Bold)
+                            Text(r.displayName, color = Ink.copy(.7f), fontSize = 12.sp)
                         }
                         PillButton(tr("accept"), { answer(scope, api, r, true, { requests = requests - r }) { error = it } })
                         Spacer(Modifier.width(6.dp))

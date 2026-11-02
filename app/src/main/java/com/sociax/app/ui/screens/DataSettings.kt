@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.data.CacheTools
 import com.sociax.app.data.Perf
+import com.sociax.app.ui.theme.Ink
 import com.sociax.app.ui.theme.PillButton
 import com.sociax.app.ui.theme.tr
 import com.sociax.app.ui.theme.trf
@@ -45,9 +46,9 @@ internal fun DataSettingsSection() {
         try { bytes = CacheTools.clearableBytes(context) } catch (e: CancellationException) { throw e } catch (e: Exception) { bytes = 0L }
     }
     Section(tr("data_set_title")) {
-        Text(tr("data_cache_title"), color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text(tr("data_cache_title"), color = Ink, fontWeight = FontWeight.SemiBold)
         Text(bytes?.let { trf("data_cache_size", CacheTools.format(it)) } ?: tr("data_cache_measuring"),
-            color = Color.White.copy(.8f), fontSize = 13.sp)
+            color = Ink.copy(.8f), fontSize = 13.sp)
         PillButton(tr("data_cache_clear"), {
             if (busy) return@PillButton
             busy = true
@@ -58,19 +59,19 @@ internal fun DataSettingsSection() {
                 busy = false
             }
         })
-        cleared?.let { Text(trf("data_cache_done", CacheTools.format(it)), color = Color.White.copy(.8f), fontSize = 12.sp) }
-        Text(tr("data_cache_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        cleared?.let { Text(trf("data_cache_done", CacheTools.format(it)), color = Ink.copy(.8f), fontSize = 12.sp) }
+        Text(tr("data_cache_note"), color = Ink.copy(.6f), fontSize = 12.sp)
         Spacer(Modifier.height(2.dp))
-        Text(tr("data_access_title"), color = Color.White, fontWeight = FontWeight.SemiBold)
-        Text(tr("data_access_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        Text(tr("data_access_title"), color = Ink, fontWeight = FontWeight.SemiBold)
+        Text(tr("data_access_note"), color = Ink.copy(.6f), fontSize = 12.sp)
         // Step 52 (plan v3.9 section 37: measure before tuning; section 18: native code only for a MEASURED need)
         Spacer(Modifier.height(2.dp))
-        Text(tr("perf_title"), color = Color.White, fontWeight = FontWeight.SemiBold)
-        Text(tr("perf_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        Text(tr("perf_title"), color = Ink, fontWeight = FontWeight.SemiBold)
+        Text(tr("perf_note"), color = Ink.copy(.6f), fontSize = 12.sp)
         PillButton(if (showReport) tr("perf_hide") else tr("perf_show"), { showReport = !showReport; copied = false })
         if (showReport) {
             val text = Perf.report()
-            Text(if (Perf.isEmpty()) tr("perf_empty") else text, color = Color.White.copy(.85f), fontSize = 12.sp)
+            Text(if (Perf.isEmpty()) tr("perf_empty") else text, color = Ink.copy(.85f), fontSize = 12.sp)
             if (!Perf.isEmpty()) {
                 PillButton(if (copied) tr("perf_copied") else tr("perf_copy"), { clipboard.setText(AnnotatedString(text)); copied = true })
             }

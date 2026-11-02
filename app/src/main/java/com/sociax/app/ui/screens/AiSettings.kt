@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.data.AiQuota
 import com.sociax.app.data.ApiClient
+import com.sociax.app.ui.theme.Ink
 import com.sociax.app.ui.theme.tr
 import com.sociax.app.ui.theme.trf
 import kotlinx.coroutines.CancellationException
@@ -34,17 +35,17 @@ internal fun AiSettingsSection(api: ApiClient?) {
     }
     Section(tr("ai_set_title")) {
         quota?.takeIf { it.limit > 0 }?.let {
-            Text(trf("ai_usage_line", it.used, it.limit, (it.resetInSeconds / 3600).toInt() + 1), color = Color.White, fontSize = 14.sp)
+            Text(trf("ai_usage_line", it.used, it.limit, (it.resetInSeconds / 3600).toInt() + 1), color = Ink, fontSize = 14.sp)
         }
         val names = providers?.map { p -> when (p) { "grok" -> "Grok"; "gemini" -> "Gemini"; "claude" -> "Claude"; else -> p } }
         when {
-            names == null -> Text(tr("ai_set_unknown"), color = Color.White.copy(.65f), fontSize = 12.sp)
-            names.isEmpty() -> Text(tr("ai_set_none"), color = Color.White.copy(.8f), fontSize = 13.sp)
-            else -> Text(trf("ai_set_providers", names.joinToString(", ")), color = Color.White.copy(.8f), fontSize = 13.sp)
+            names == null -> Text(tr("ai_set_unknown"), color = Ink.copy(.65f), fontSize = 12.sp)
+            names.isEmpty() -> Text(tr("ai_set_none"), color = Ink.copy(.8f), fontSize = 13.sp)
+            else -> Text(trf("ai_set_providers", names.joinToString(", ")), color = Ink.copy(.8f), fontSize = 13.sp)
         }
         Spacer(Modifier.height(2.dp))
-        Text(tr("ai_set_privacy"), color = Color.White.copy(.8f), fontSize = 13.sp)
-        Text(tr("ai_set_group"), color = Color.White.copy(.8f), fontSize = 13.sp)
-        Text(tr(if (quota?.pro == true) "ai_set_pro_on" else "ai_set_pro_free"), color = Color.White.copy(.65f), fontSize = 12.sp)
+        Text(tr("ai_set_privacy"), color = Ink.copy(.8f), fontSize = 13.sp)
+        Text(tr("ai_set_group"), color = Ink.copy(.8f), fontSize = 13.sp)
+        Text(tr(if (quota?.pro == true) "ai_set_pro_on" else "ai_set_pro_free"), color = Ink.copy(.65f), fontSize = 12.sp)
     }
 }

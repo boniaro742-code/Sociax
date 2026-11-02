@@ -20,8 +20,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.data.ApiClient
 import com.sociax.app.data.Me
-import com.sociax.app.ui.theme.Navy
-import com.sociax.app.ui.theme.Teal
+import com.sociax.app.ui.theme.ErrorInk
+import com.sociax.app.ui.theme.Ink
+import com.sociax.app.ui.theme.OnAccent
+import com.sociax.app.ui.theme.Accent
 import com.sociax.app.ui.theme.tr
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -40,8 +42,8 @@ internal fun ChatSettingsSection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> 
             var on by remember(me.readReceipts) { mutableStateOf(me.readReceipts) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(tr("read_receipts"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(tr("read_receipts_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                    Text(tr("read_receipts"), color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text(tr("read_receipts_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
                 }
                 Switch(
                     on,
@@ -54,11 +56,11 @@ internal fun ChatSettingsSection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> 
                             catch (e: Exception) { on = old; error = errText(e) }
                         }
                     },
-                    colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                    colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
                 )
             }
         }
-        error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 12.sp) }
-        Text(tr("chat_set_groups"), color = Color.White.copy(.65f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
+        error?.let { Text(it, color = ErrorInk, fontSize = 12.sp) }
+        Text(tr("chat_set_groups"), color = Ink.copy(.65f), fontSize = 12.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }

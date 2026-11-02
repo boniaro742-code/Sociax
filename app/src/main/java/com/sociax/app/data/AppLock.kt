@@ -41,6 +41,13 @@ class AppLock(context: Context) {
 
     val type: LockType? get() = runCatching { LockType.valueOf(sp.getString("type", "") ?: "") }.getOrNull()
 
+    /** Step 54 (plan v3.9.2): the Firebase id of the account this lock belongs to. Logging out keeps the lock on the phone (it is a
+     *  setting, and logging out must not erase settings), but a DIFFERENT account that signs in here never uses it. null = a lock made
+     *  before this version (it belongs to the account that is signed in when the app starts). */
+    val ownerUid: String? get() = sp.getString("owner_uid", null)
+
+    fun bindOwner(uid: String?) { if (uid != null) sp.edit().putString("owner_uid", uid).apply() }
+
     /** Seconds in the background before the lock asks again. Default 1 minute. */
     var timeoutSec: Int
         get() = sp.getInt("timeout_sec", 60)
@@ -94,7 +101,7 @@ class AppLock(context: Context) {
         return LockCheck.Wrong(TRIES_PER_ROUND - fails % TRIES_PER_ROUND)
     }
 
-    /** Removes the lock (log out / delete account). */
+    /** Removes the lock (delete account, or a different account signs in on this phone). Log out does NOT call this (plan v3.9.2). */
     fun clear() {
         sp.edit().clear().apply()
         runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(KEY_ALIAS) }

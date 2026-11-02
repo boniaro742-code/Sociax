@@ -44,10 +44,10 @@ fun FollowListScreen(api: ApiClient, username: String, startKind: String, onBack
             PillButton(tr("followers"), { if (kind != "followers") kind = "followers" }, filled = kind == "followers")
             PillButton(tr("following"), { if (kind != "following") kind = "following" }, filled = kind == "following")
         }
-        error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
-        if (loading) CircularProgressIndicator(color = Teal)
+        error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+        if (loading) CircularProgressIndicator(color = Accent)
         else if (users.isEmpty() && error == null)
-            Text(tr(if (kind == "followers") "no_followers_yet" else "no_following_yet"), color = Color.White.copy(.7f))
+            Text(tr(if (kind == "followers") "no_followers_yet" else "no_following_yet"), color = Ink.copy(.7f))
         val scope = rememberCoroutineScope()
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(users, key = { it.username }) { u ->
@@ -56,8 +56,8 @@ fun FollowListScreen(api: ApiClient, username: String, startKind: String, onBack
                         Avatar(u.avatarUrl, 44)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
-                            Text(u.displayName, color = Color.White.copy(.7f), fontSize = 12.sp)
+                            Text(u.username, color = Ink, fontWeight = FontWeight.Bold)
+                            Text(u.displayName, color = Ink.copy(.7f), fontSize = 12.sp)
                         }
                     }
                 }

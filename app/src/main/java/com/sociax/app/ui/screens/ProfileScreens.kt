@@ -4,6 +4,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -39,11 +40,17 @@ import kotlinx.coroutines.launch
 fun Avatar(url: String?, size: Int, modifier: Modifier = Modifier) {
     Box(
         modifier.size(size.dp).clip(CircleShape)
-            .background(Brush.linearGradient(listOf(Teal, BlueMid))),
+            .background(Brush.linearGradient(listOf(AccentLight, Accent))),
         contentAlignment = Alignment.Center
     ) {
         if (url != null) AsyncImage(url, tr("a11y_profile_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     }
+}
+
+/** Profile picture with the purple ring of the new design (profile pages). The ring is drawn around a normal [Avatar] of [size] dp. */
+@Composable
+fun RingedAvatar(url: String?, size: Int, modifier: Modifier = Modifier) {
+    Box(modifier.size((size + 10).dp).border(3.dp, AccentBrush, CircleShape).padding(5.dp)) { Avatar(url, size) }
 }
 
 @Composable
@@ -89,7 +96,7 @@ fun EditProfileScreen(me: Me, api: ApiClient, onSaved: (Me) -> Unit, onBack: () 
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack)
             Spacer(Modifier.width(12.dp))
-            Text(tr("edit_profile"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(tr("edit_profile"), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.height(24.dp))
         Box(Modifier.clickable(enabled = !busy) {
@@ -97,34 +104,34 @@ fun EditProfileScreen(me: Me, api: ApiClient, onSaved: (Me) -> Unit, onBack: () 
         }) {
             Avatar(current.avatarUrl, 110)
             Box(
-                Modifier.align(Alignment.BottomEnd).size(34.dp).clip(CircleShape).background(Teal),
+                Modifier.align(Alignment.BottomEnd).size(34.dp).clip(CircleShape).background(Accent),
                 contentAlignment = Alignment.Center
-            ) { Icon(Icons.Filled.CameraAlt, tr("a11y_change_photo"), tint = Navy, modifier = Modifier.size(18.dp)) }
+            ) { Icon(Icons.Filled.CameraAlt, tr("a11y_change_photo"), tint = OnAccent, modifier = Modifier.size(18.dp)) }
         }
         Spacer(Modifier.height(20.dp))
         GlassField(name, { name = it.take(50) }, tr("display_name"))
         Spacer(Modifier.height(12.dp))
         GlassField(username, { v -> username = v.lowercase().filter { c -> c in 'a'..'z' || c in '0'..'9' || c == '_' || c == '.' }.take(20) }, tr("edit_username_hint"))
-        Text(tr("username_rule"), color = Color.White.copy(.5f), fontSize = 11.sp, modifier = Modifier.align(Alignment.Start).padding(start = 12.dp, top = 2.dp))
+        Text(tr("username_rule"), color = Ink.copy(.5f), fontSize = 11.sp, modifier = Modifier.align(Alignment.Start).padding(start = 12.dp, top = 2.dp))
         Spacer(Modifier.height(12.dp))
         GlassField(bio, { bio = it.take(150) }, tr("bio_hint"))
-        Text("${bio.length}/150", color = Color.White.copy(.5f), fontSize = 11.sp, modifier = Modifier.align(Alignment.End))
+        Text("${bio.length}/150", color = Ink.copy(.5f), fontSize = 11.sp, modifier = Modifier.align(Alignment.End))
         Spacer(Modifier.height(14.dp))
         GlassPanel(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(tr("private_acc"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(tr("private_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                    Text(tr("private_acc"), color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text(tr("private_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
                 }
                 androidx.compose.material3.Switch(isPrivate, { isPrivate = it })
             }
         }
         message?.let {
             Spacer(Modifier.height(10.dp))
-            Text(it, color = if (isError) Color(0xFFFF8A8A) else Teal, fontSize = 13.sp)
+            Text(it, color = if (isError) ErrorInk else Accent, fontSize = 13.sp)
         }
         Spacer(Modifier.height(20.dp))
-        if (busy) CircularProgressIndicator(color = Teal)
+        if (busy) CircularProgressIndicator(color = Accent)
         else PillButton(tr("save"), {
             if (name.isBlank()) { message = errNameEmpty; isError = true; return@PillButton }
             if (username.length < 3) { message = errUsername; isError = true; return@PillButton }

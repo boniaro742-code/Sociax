@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -22,6 +23,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -40,26 +43,30 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val ErrorRed = Color(0xFFFF8A8A)
+private val ErrorRed: Color get() = ErrorInk
 
 @Composable
-private fun ChatAvatar(chat: ChatSummary, size: Int) {
-    if (chat.isGroup) {
-        Box(Modifier.size(size.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF3A6BFF), Color(0xFF6A3DF0)))),
-            contentAlignment = Alignment.Center) {
-            Icon(Icons.Filled.Groups, null, tint = Color.White, modifier = Modifier.size((size * 0.55f).dp))
-        }
-    } else Avatar(chat.avatarUrl, size)
+private fun ChatAvatar(chat: ChatSummary, size: Int, online: Boolean = false) {
+    Box {
+        if (chat.isGroup) {
+            Box(Modifier.size(size.dp).clip(CircleShape).background(AccentBrush), contentAlignment = Alignment.Center) {
+                Icon(Icons.Filled.Groups, null, tint = OnAccent, modifier = Modifier.size((size * 0.55f).dp))
+            }
+        } else Avatar(chat.avatarUrl, size)
+        if (online) OnlineDot(Modifier.align(Alignment.BottomEnd), size = (size * 0.3f).dp)
+    }
 }
 
 // =====================================================================
-// Chat tab: list of private chats and groups (updates every few seconds)
+// Chat tab (new design): "Chats" title, "Active now" row, then plain rows (updates every few seconds)
 // =====================================================================
 @Composable
-fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () -> Unit, onNewGroup: () -> Unit, onAi: () -> Unit) {
+fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () -> Unit, onNewGroup: () -> Unit) {
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // who is online right now (one-to-one chats only, the nearest few; the server tells nothing about people who hide their status)
+    var online by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -69,59 +76,80 @@ fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () 
             delay(6000)
         }
     }
-
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(tr("tab_chat"), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
-            GlassIconButton(Icons.Filled.GroupAdd, tr("new_group"), onNewGroup)
-            Spacer(Modifier.width(8.dp))
-            GlassIconButton(Icons.Filled.Edit, tr("new_chat"), onNewChat)
-        }
-        Spacer(Modifier.height(12.dp))
-        // Sociax AI: always first in the list (private, opt-in assistant)
-        GlassPanel(Modifier.fillMaxWidth().clickable { onAi() }) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(48.dp).clip(CircleShape).background(Brush.linearGradient(listOf(Color(0xFF6A3DF0), Color(0xFF1FB6FF)))),
-                    contentAlignment = Alignment.Center) { Text("AI", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp) }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(tr("ai_title"), color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
-                    Text(tr("ai_card_sub"), color = Color.White.copy(.65f), fontSize = 13.sp, maxLines = 1)
-                }
+    LaunchedEffect(chats.map { it.id }) {
+        val peers = chats.filter { !it.isGroup && it.username != null }.take(8)
+        while (peers.isNotEmpty()) {
+            val now = HashSet<String>()
+            for (c in peers) {
+                val name = c.username ?: continue
+                try { if (api.presence(name)?.online == true) now.add(name) }
+                catch (e: CancellationException) { throw e } catch (e: Exception) { }
             }
+            online = now
+            delay(30000)
         }
-        Spacer(Modifier.height(10.dp))
-        error?.let { Text(it, color = ErrorRed, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
-        if (!loaded) CircularProgressIndicator(color = Teal)
+        if (peers.isEmpty()) online = emptySet()
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(tr("tab_chat"), color = Ink, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+            GlassIconButton(Icons.Filled.GroupAdd, tr("new_group"), onNewGroup, size = 44)
+            Spacer(Modifier.width(10.dp))
+            Box(
+                Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(AccentBrush).clickable(onClick = onNewChat),
+                contentAlignment = Alignment.Center
+            ) { Icon(Icons.Filled.Edit, tr("new_chat"), tint = OnAccent, modifier = Modifier.size(22.dp)) }
+        }
+        // Step 58 (plan v3.9.6): Chat is for people and groups only. The "Sociax AI" card that used to be first here now lives in the AI tab.
+        error?.let { Text(it, color = ErrorRed, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+        if (!loaded) Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
         else if (chats.isEmpty() && error == null) {
-            Text(tr("no_chats"), color = Color.White.copy(.7f))
+            Text(tr("no_chats"), color = Ink.copy(.7f), modifier = Modifier.padding(16.dp))
         }
         LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = bottomBarClearance())   // the floating tab bar covers the bottom of the page
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(top = 4.dp, bottom = bottomBarClearance())   // the docked tab bar covers the bottom of the page
         ) {
-            items(chats, key = { it.id }) { c ->
-                GlassPanel(Modifier.fillMaxWidth().clickable { onOpen(c) }) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ChatAvatar(c, 48)
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(c.title, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
-                            Text(
-                                when (c.lastKind) { null -> tr("no_messages_yet"); "ai" -> "AI: " + c.lastText; else -> c.lastText },
-                                color = Color.White.copy(if (c.unread > 0) .95f else .65f), fontSize = 13.sp, maxLines = 1
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(timeAgo(c.lastAt), color = Color.White.copy(.55f), fontSize = 11.sp)
-                            if (c.unread > 0) {
+            val activeChats = chats.filter { !it.isGroup && it.username != null && it.username in online }
+            if (activeChats.isNotEmpty()) item(key = "active_now") {
+                Column(Modifier.padding(bottom = 8.dp)) {
+                    Text(tr("active_now"), color = Ink, fontWeight = FontWeight.Bold, fontSize = 15.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        items(activeChats, key = { it.id }) { c ->
+                            Column(Modifier.width(64.dp).clip(RoundedCornerShape(12.dp)).clickable { onOpen(c) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(Modifier.size(64.dp).border(2.dp, Accent, CircleShape).padding(4.dp)) { ChatAvatar(c, 56, online = true) }
                                 Spacer(Modifier.height(4.dp))
-                                Box(Modifier.defaultMinSize(minWidth = 20.dp).height(20.dp).clip(CircleShape).background(Teal),
-                                    contentAlignment = Alignment.Center) {
-                                    Text(if (c.unread > 99) "99+" else c.unread.toString(), color = Navy, fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 5.dp))
-                                }
+                                Text(c.title.substringBefore(' '), color = Ink.copy(.85f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
+                        }
+                    }
+                }
+            }
+            items(chats, key = { it.id }) { c ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onOpen(c) }.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ChatAvatar(c, 56, online = !c.isGroup && c.username != null && c.username in online)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(c.title, color = Ink, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            when (c.lastKind) { null -> tr("no_messages_yet"); "ai" -> "AI: " + c.lastText; else -> c.lastText },
+                            color = Ink.copy(if (c.unread > 0) .9f else .6f), fontSize = 14.sp,
+                            fontWeight = if (c.unread > 0) FontWeight.Medium else FontWeight.Normal,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(timeAgo(c.lastAt), color = if (c.unread > 0) Accent else Ink.copy(.5f), fontSize = 12.sp)
+                        if (c.unread > 0) {
+                            Spacer(Modifier.height(5.dp))
+                            CountBadge(c.unread)
                         }
                     }
                 }
@@ -137,7 +165,7 @@ fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () 
 fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, onInfo: () -> Unit) {
     val scope = rememberCoroutineScope()
     val msgs = remember { mutableStateListOf<ChatMessage>() }
-    var text by remember { mutableStateOf("") }
+    var text by rememberSaveable(chat.id) { mutableStateOf("") }     // Step 56: the unsent draft survives rotation / a recreated screen
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -197,6 +225,11 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
             if (reduceMotion) listState.scrollToItem(msgs.size - 1) else listState.animateScrollToItem(msgs.size - 1)
         }
     }
+    // Step 56: when the keyboard opens the list gets shorter; keep the newest message in view instead of hiding it behind the box.
+    val keyboardOpen = rememberImeVisible()
+    LaunchedEffect(keyboardOpen) {
+        if (keyboardOpen && msgs.isNotEmpty()) listState.scrollToItem(msgs.size - 1)
+    }
 
     fun send(body: String, clearInput: Boolean) {
         val t = body.trim()
@@ -224,9 +257,9 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
     followAsk?.let { who ->
         AlertDialog(
             onDismissRequest = { followAsk = null },
-            containerColor = Color(0xFF121C2E),
-            title = { Text(tr("follow_first_title"), color = Color.White, fontWeight = FontWeight.Bold) },
-            text = { Text(trf("follow_first_body", who), color = Color.White.copy(.8f)) },
+            containerColor = CardFill,
+            title = { Text(tr("follow_first_title"), color = Ink, fontWeight = FontWeight.Bold) },
+            text = { Text(trf("follow_first_body", who), color = Ink.copy(.8f)) },
             confirmButton = {
                 TextButton(onClick = {
                     followAsk = null
@@ -239,9 +272,9 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
                             notice = null; error = null
                         } catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
                     }
-                }) { Text(tr("yes"), color = Teal, fontWeight = FontWeight.Bold) }
+                }) { Text(tr("yes"), color = Accent, fontWeight = FontWeight.Bold) }
             },
-            dismissButton = { TextButton(onClick = { followAsk = null }) { Text(tr("no"), color = Color.White) } }
+            dismissButton = { TextButton(onClick = { followAsk = null }) { Text(tr("no"), color = Ink) } }
         )
     }
 
@@ -252,12 +285,12 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
             ChatAvatar(chat, 40)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(chat.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1)
-                Text(if (chat.isGroup) tr("private_group") else chat.username.orEmpty(), color = Color.White.copy(.6f), fontSize = 12.sp)
+                Text(chat.title, color = Ink, fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1)
+                Text(if (chat.isGroup) tr("private_group") else chat.username.orEmpty(), color = Ink.copy(.6f), fontSize = 12.sp)
                 presence?.let { p ->
                     Text(
                         if (p.online) tr("presence_online") else trf("presence_last_seen", timeAgo(p.lastSeenAt)),
-                        color = if (p.online) Teal else Color.White.copy(.6f), fontSize = 11.sp
+                        color = if (p.online) Accent else Ink.copy(.6f), fontSize = 11.sp
                     )
                 }
             }
@@ -266,8 +299,8 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
         Spacer(Modifier.height(8.dp))
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (loading) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.Center))
-            else if (msgs.isEmpty()) Text(tr("say_hello"), color = Color.White.copy(.6f), modifier = Modifier.align(Alignment.Center))
+            if (loading) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.Center))
+            else if (msgs.isEmpty()) Text(tr("say_hello"), color = Ink.copy(.6f), modifier = Modifier.align(Alignment.Center))
             else LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 // Step 43: "Seen" only under the NEWEST of my messages the other person has seen (one-to-one chats, both switches on)
                 val seenId = peerReadId?.let { pr -> msgs.filter { it.mine && !it.held && it.id <= pr }.maxOfOrNull { it.id } }
@@ -275,7 +308,7 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
             }
         }
 
-        notice?.let { Text(it, color = Color(0xFFFFE08A), fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp)) }
+        notice?.let { Text(it, color = NoticeInk, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp)) }
         error?.let { Text(it, color = ErrorRed, fontSize = 12.sp, modifier = Modifier.padding(vertical = 4.dp)) }
         Spacer(Modifier.height(4.dp))
 
@@ -283,17 +316,12 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             InsetPill(Modifier.weight(1f)) {
                 Row(Modifier.padding(start = 6.dp, end = 5.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.TextField(
-                        text, { text = it.take(2000) }, Modifier.weight(1f),
-                        placeholder = { Text(tr("send_message"), color = Color.White.copy(.6f), fontSize = 14.sp) },
-                        colors = androidx.compose.material3.TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                    ComposerField(
+                        text, { text = it.take(2000) }, tr("send_message"), { send(text, true) }, Modifier.weight(1f)
                     )
-                    Box(Modifier.size(42.dp).clip(CircleShape).background(PaperWhite).clickable { send(text, true) },
+                    Box(Modifier.size(42.dp).clip(CircleShape).background(AccentBrush).clickable { send(text, true) },
                         contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Send, tr("a11y_send"), tint = Navy, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Outlined.Send, tr("a11y_send"), tint = OnAccent, modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -310,26 +338,28 @@ fun ConversationScreen(api: ApiClient, chat: ChatSummary, onBack: () -> Unit, on
 @Composable
 private fun Bubble(m: ChatMessage, group: Boolean, seen: Boolean = false) {
     if (m.kind == "system") {
-        Text(m.text, color = Color.White.copy(.6f), fontSize = 12.sp, textAlign = TextAlign.Center,
+        Text(m.text, color = Ink.copy(.6f), fontSize = 12.sp, textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp))
         return
     }
     val mine = m.mine
+    // my messages: purple gradient with white text; Sociax AI: pale purple; everybody else: soft grey
     val fill = when {
-        mine -> Modifier.background(Brush.linearGradient(listOf(Color(0xFF3A6BFF), Color(0xFF1FB6FF))))
-        m.kind == "ai" -> Modifier.background(Brush.linearGradient(listOf(Color(0x556A3DF0), Color(0x553A6BFF))))
-        else -> Modifier.background(Color(0x33FFFFFF))
+        mine -> Modifier.background(AccentBrush)
+        m.kind == "ai" -> Modifier.background(SoftAccent)
+        else -> Modifier.background(FieldFill)
     }
+    val textColor = if (mine) OnAccent else Ink
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Column(Modifier.widthIn(max = 290.dp).clip(RoundedCornerShape(18.dp)).then(fill).padding(horizontal = 12.dp, vertical = 8.dp)) {
             if (!mine && (m.kind == "ai" || group)) {
-                Text(if (m.kind == "ai") "Sociax AI" else m.username.orEmpty(), color = if (m.kind == "ai") Color(0xFFC9B8FF) else Teal,
+                Text(if (m.kind == "ai") "Sociax AI" else m.username.orEmpty(), color = Accent,
                     fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
-            Text(m.text, color = Color.White, fontSize = 15.sp)
-            Text(timeAgo(m.createdAt), color = Color.White.copy(.55f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
-            if (m.held) Text(tr("follow_first_waiting"), color = Color.White.copy(.8f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
-            else if (seen) Text(tr("seen_label"), color = Color.White.copy(.8f), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.End))
+            Text(m.text, color = textColor, fontSize = 15.sp)
+            Text(timeAgo(m.createdAt), color = textColor.copy(.65f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
+            if (m.held) Text(tr("follow_first_waiting"), color = textColor.copy(.85f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
+            else if (seen) Text(tr("seen_label"), color = textColor.copy(.85f), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.End))
         }
     }
 }
@@ -371,10 +401,10 @@ fun NewChatScreen(api: ApiClient, onBack: () -> Unit, onOpen: (ChatSummary) -> U
                         Avatar(u.avatarUrl, 44)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
-                            Text(u.displayName + if (u.isPrivate) " · " + tr("private_tag") else "", color = Color.White.copy(.7f), fontSize = 12.sp)
+                            Text(u.username, color = Ink, fontWeight = FontWeight.Bold)
+                            Text(u.displayName + if (u.isPrivate) " · " + tr("private_tag") else "", color = Ink.copy(.7f), fontSize = 12.sp)
                         }
-                        Icon(Icons.Filled.ChatBubble, tr("a11y_message"), tint = Teal)
+                        Icon(Icons.Filled.ChatBubble, tr("a11y_message"), tint = Accent)
                     }
                 }
             }
@@ -409,11 +439,11 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
         when (step) {
             0 -> {
                 Text(tr("groups_private_note"),
-                    color = Color.White.copy(.75f), fontSize = 13.sp)
+                    color = Ink.copy(.75f), fontSize = 13.sp)
                 Spacer(Modifier.height(14.dp))
                 GlassField(name, { name = it.take(50) }, tr("group_name"))
                 Spacer(Modifier.height(16.dp))
-                Text(tr("add_members_now"), color = Teal, fontWeight = FontWeight.Bold)
+                Text(tr("add_members_now"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     PillButton(tr("yes_add_members"), { if (name.isBlank()) error = errGroupName else { error = null; step = 1 } })
@@ -424,11 +454,11 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                 GlassField(query, { query = it }, tr("search_user"))
                 Spacer(Modifier.height(10.dp))
                 if (picked.isNotEmpty()) {
-                    Text(trf("selected_n", picked.size), color = Teal, fontWeight = FontWeight.Bold)
+                    Text(trf("selected_n", picked.size), color = Accent, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     picked.forEach { u ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(u.username, color = Color.White, modifier = Modifier.weight(1f))
+                            Text(u.username, color = Ink, modifier = Modifier.weight(1f))
                             PillButton(tr("remove"), { picked.remove(u) }, filled = false)
                         }
                     }
@@ -440,10 +470,10 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                             Avatar(u.avatarUrl, 40)
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(u.username, color = Color.White, fontWeight = FontWeight.Bold)
-                                Text(u.displayName, color = Color.White.copy(.7f), fontSize = 12.sp)
+                                Text(u.username, color = Ink, fontWeight = FontWeight.Bold)
+                                Text(u.displayName, color = Ink.copy(.7f), fontSize = 12.sp)
                             }
-                            Icon(Icons.Filled.Add, tr("a11y_add"), tint = Teal)
+                            Icon(Icons.Filled.Add, tr("a11y_add"), tint = Accent)
                         }
                     }
                 }
@@ -451,23 +481,23 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                 PillButton(tr("continue"), { step = 2 }, Modifier.fillMaxWidth())
             }
             else -> {
-                Text(tr("check_before"), color = Teal, fontWeight = FontWeight.Bold)
+                Text(tr("check_before"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 GlassPanel(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(name.trim(), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text(name.trim(), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                         Text(
                             if (picked.isEmpty()) tr("members_just_you")
                             else tr("members_you_plus") + picked.joinToString(", ") { it.username },
-                            color = Color.White.copy(.85f), fontSize = 14.sp
+                            color = Ink.copy(.85f), fontSize = 14.sp
                         )
                         Text(tr("owner_note"),
-                            color = Color.White.copy(.65f), fontSize = 12.sp)
+                            color = Ink.copy(.65f), fontSize = 12.sp)
                     }
                 }
                 error?.let { Text(it, color = ErrorRed, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp)) }
                 Spacer(Modifier.height(16.dp))
-                if (busy) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.CenterHorizontally))
+                if (busy) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.CenterHorizontally))
                 else {
                     PillButton(tr("confirm_create"), {
                         scope.launch {
@@ -519,11 +549,11 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
         TopBar(tr("group_info"), onBack)
         val g = info
         if (g == null) {
-            if (error == null) CircularProgressIndicator(color = Teal)
+            if (error == null) CircularProgressIndicator(color = Accent)
         } else {
             val manage = g.myRole == "owner" || g.myRole == "admin"
-            Text(g.name, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
-            Text(trf("members_count_note", g.members.size), color = Color.White.copy(.65f), fontSize = 12.sp)
+            Text(g.name, color = Ink, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+            Text(trf("members_count_note", g.members.size), color = Ink.copy(.65f), fontSize = 12.sp)
 
             // ---- AI Join ----
             Spacer(Modifier.height(14.dp))
@@ -531,16 +561,16 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(tr("ai_join"), color = Teal, fontWeight = FontWeight.Bold)
-                            Text(if (g.aiEnabled) tr("ai_is_on") else tr("ai_is_off"), color = Color.White, fontSize = 14.sp)
+                            Text(tr("ai_join"), color = Accent, fontWeight = FontWeight.Bold)
+                            Text(if (g.aiEnabled) tr("ai_is_on") else tr("ai_is_off"), color = Ink, fontSize = 14.sp)
                         }
                         if (manage) Switch(
                             g.aiEnabled, { pending = if (it) "ai_on" else "ai_off" },
-                            colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                            colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
                         )
                     }
                     Text(tr("ai_rule") + if (manage) tr("ai_rule_manage") else tr("ai_rule_nomanage"),
-                        color = Color.White.copy(.65f), fontSize = 12.sp)
+                        color = Ink.copy(.65f), fontSize = 12.sp)
                 }
             }
 
@@ -553,7 +583,7 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
                             "ai_off" -> tr("confirm_ai_off")
                             "leave" -> tr("confirm_leave")
                             else -> tr("confirm_delete")
-                        }, color = Color.White, fontSize = 14.sp)
+                        }, color = Ink, fontSize = 14.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             PillButton(tr("yes"), {
                                 pending = null
@@ -578,7 +608,7 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
 
             // ---- members ----
             Spacer(Modifier.height(16.dp))
-            Text(tr("members"), color = Teal, fontWeight = FontWeight.Bold)
+            Text(tr("members"), color = Accent, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
             g.members.forEach { m ->
                 val isMe = m.username == myUsername
@@ -589,9 +619,9 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
                         Avatar(m.avatarUrl, 40)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(m.username + if (isMe) " " + tr("you_tag") else "", color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
+                            Text(m.username + if (isMe) " " + tr("you_tag") else "", color = Ink, fontWeight = FontWeight.Bold, maxLines = 1)
                             Text(when (m.role) { "owner" -> tr("role_owner"); "admin" -> tr("role_admin"); else -> tr("role_member") },
-                                color = Color.White.copy(.65f), fontSize = 12.sp)
+                                color = Ink.copy(.65f), fontSize = 12.sp)
                         }
                         if (canPromote) PillButton(if (m.role == "admin") tr("remove_admin") else tr("make_admin"),
                             { act { api.setGroupRole(chat.id, m.username, m.role != "admin") } }, filled = false)
@@ -604,7 +634,7 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
             // ---- add member (owner / admin) ----
             if (manage) {
                 Spacer(Modifier.height(14.dp))
-                Text(tr("add_member"), color = Teal, fontWeight = FontWeight.Bold)
+                Text(tr("add_member"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 GlassField(addQuery, { addQuery = it }, tr("search_user"))
                 hits.filter { h -> g.members.none { it.username == h.username } }.forEach { u ->
@@ -612,7 +642,7 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
                         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(u.avatarUrl, 36)
                             Spacer(Modifier.width(10.dp))
-                            Text(u.username, color = Color.White, modifier = Modifier.weight(1f))
+                            Text(u.username, color = Ink, modifier = Modifier.weight(1f))
                             PillButton(tr("add"), { act { api.addGroupMember(chat.id, u.username); addQuery = "" } })
                         }
                     }

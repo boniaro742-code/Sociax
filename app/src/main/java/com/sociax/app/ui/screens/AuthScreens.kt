@@ -2,21 +2,29 @@ package com.sociax.app.ui.screens
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.sociax.app.data.RememberedAccount
 import com.sociax.app.ui.theme.*
 
 private val USERNAME_RE = Regex("^[a-z0-9_.]{3,20}$")
@@ -30,7 +38,7 @@ fun LoadingScreen(message: String? = null, onRetry: (() -> Unit)? = null) {
             SociaxLogo(showName = true)
             if (message != null) {
                 Spacer(Modifier.height(24.dp))
-                Text(message, color = Color(0xFFFFB4A8), fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
+                Text(message, color = ErrorInk, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 32.dp))
                 if (onRetry != null) {
                     Spacer(Modifier.height(12.dp))
                     PillButton(tr("try_again"), onRetry)
@@ -46,15 +54,15 @@ fun LoadingScreen(message: String? = null, onRetry: (() -> Unit)? = null) {
 fun LanguageSelector(lang: Lang, onLang: (Lang) -> Unit, modifier: Modifier = Modifier) {
     var open by remember { mutableStateOf(false) }
     Column(modifier, horizontalAlignment = Alignment.End) {
-        Text(tr("choose_language"), color = Color.White.copy(alpha = .7f), fontSize = 12.sp)
+        Text(tr("choose_language"), color = Ink.copy(alpha = .7f), fontSize = 12.sp)
         Spacer(Modifier.height(4.dp))
         Box {
             InsetPill(Modifier.clickable { open = true }) {
                 Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Language, tr("choose_language"), tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Language, tr("choose_language"), tint = Ink.copy(alpha = .85f), modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(lang.label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Icon(Icons.Filled.ArrowDropDown, null, tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(20.dp))
+                    Text(lang.label, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Filled.ArrowDropDown, null, tint = Ink.copy(alpha = .85f), modifier = Modifier.size(20.dp))
                 }
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
@@ -71,7 +79,8 @@ fun LanguageSelector(lang: Lang, onLang: (Lang) -> Unit, modifier: Modifier = Mo
 }
 
 @Composable
-fun LoginScreen(busy: Boolean, error: String?, lang: Lang, onLang: (Lang) -> Unit, onGoogle: () -> Unit) {
+fun LoginScreen(busy: Boolean, error: String?, lang: Lang, onLang: (Lang) -> Unit,
+                remembered: List<RememberedAccount> = emptyList(), onForget: (String) -> Unit = {}, onGoogle: () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         // at the TOP of the opening screen, before sign-in (plan v3.5 section 24)
         LanguageSelector(lang, onLang, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp))
@@ -83,14 +92,30 @@ fun LoginScreen(busy: Boolean, error: String?, lang: Lang, onLang: (Lang) -> Uni
             SociaxLogo(size = 200.dp, showName = true)
             Spacer(Modifier.height(48.dp))
             // Google is the ONLY sign-in button (plan section 3)
-            if (busy) CircularProgressIndicator(color = Teal)
+            if (busy) CircularProgressIndicator(color = Accent)
             else PillButton(tr("continue_google"), onGoogle, Modifier.fillMaxWidth())
             error?.let {
                 Spacer(Modifier.height(12.dp))
-                Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp)
+                Text(it, color = ErrorInk, fontSize = 13.sp)
+            }
+            // Step 54 (plan v3.9.2 section 3): accounts used on this phone. A name here is NOT a sign-in: tapping it opens the normal
+            // Google account chooser, and whichever account is chosen there is the one that opens (nothing is merged or switched silently).
+            if (!busy && remembered.isNotEmpty()) {
+                Spacer(Modifier.height(24.dp))
+                Text(tr("remembered_title"), color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(tr("remembered_hint"), color = Ink.copy(alpha = .6f), fontSize = 12.sp)
+                remembered.forEach { acc ->
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).clickable { onGoogle() }.padding(vertical = 6.dp)) {
+                            Text(acc.displayName.ifBlank { acc.username }, color = Ink, fontSize = 15.sp)
+                            if (acc.username.isNotBlank()) Text(acc.username, color = Accent, fontSize = 13.sp)
+                        }
+                        TextButton(onClick = { onForget(acc.uid) }) { Text(tr("remembered_forget"), color = Ink.copy(alpha = .7f), fontSize = 12.sp) }
+                    }
+                }
             }
             Spacer(Modifier.height(16.dp))
-            Text(tr("terms_note"), color = Color.White.copy(alpha = .6f), fontSize = 12.sp)
+            Text(tr("terms_note"), color = Ink.copy(alpha = .6f), fontSize = 12.sp)
         }
     }
 }
@@ -98,11 +123,18 @@ fun LoginScreen(busy: Boolean, error: String?, lang: Lang, onLang: (Lang) -> Uni
 private val sources = listOf("TikTok", "YouTube", "Facebook", "Instagram", "Google Search", "Friend/Family", "AI Assistant", "Other")
 
 @Composable
-fun OnboardingScreen(busy: Boolean, serverError: String?, onSubmit: (name: String, username: String, age: Int, source: String?) -> Unit) {
+fun OnboardingScreen(
+    busy: Boolean, serverError: String?,
+    initialName: String = "", initialUsername: String = "", initialAge: String = "",
+    onDraft: (name: String, username: String, age: String) -> Unit = { _, _, _ -> },
+    onSubmit: (name: String, username: String, age: Int, source: String?) -> Unit
+) {
     var step by remember { mutableIntStateOf(0) }
-    var name by remember { mutableStateOf("") }
-    var username by remember { mutableStateOf("") }
-    var age by remember { mutableStateOf("") }
+    var name by rememberSaveable { mutableStateOf(initialName) }
+    var username by rememberSaveable { mutableStateOf(initialUsername) }
+    var age by rememberSaveable { mutableStateOf(initialAge) }
+    // Step 57 (plan v3.10.0): what is typed is kept on the phone for THIS account until the profile is saved
+    LaunchedEffect(name, username, age) { onDraft(name, username, age) }
     var source by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val errName = tr("err_name"); val errUsername = tr("err_username"); val errAge = tr("err_age")
@@ -110,7 +142,7 @@ fun OnboardingScreen(busy: Boolean, serverError: String?, onSubmit: (name: Strin
     // If the server rejects (e.g. username taken), go back to the first step.
     LaunchedEffect(serverError) { if (serverError != null) { error = serverError; step = 0 } }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding().padding(24.dp).verticalScroll(rememberScrollState())) {
+    Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(24.dp).verticalScroll(rememberScrollState())) {   // Step 56: imePadding so the age / username boxes are not hidden by the keyboard
         SociaxLogo(Modifier.align(Alignment.CenterHorizontally), size = 96.dp)
         Spacer(Modifier.height(16.dp))
         when (step) {
@@ -121,7 +153,7 @@ fun OnboardingScreen(busy: Boolean, serverError: String?, onSubmit: (name: Strin
                 GlassField(username, { username = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' || c == '.' } }, tr("username_hint"))
                 Spacer(Modifier.height(12.dp))
                 GlassField(age, { age = it.filter(Char::isDigit).take(3) }, tr("age"))
-                error?.let { Text(it, color = Color(0xFFFF8A8A), modifier = Modifier.padding(top = 8.dp)) }
+                error?.let { Text(it, color = ErrorInk, modifier = Modifier.padding(top = 8.dp)) }
                 Spacer(Modifier.height(20.dp))
                 PillButton(tr("next"), {
                     val a = age.toIntOrNull()
@@ -144,12 +176,12 @@ fun OnboardingScreen(busy: Boolean, serverError: String?, onSubmit: (name: Strin
                 Title(tr("upgrade_anytime"))
                 GlassPanel(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text(tr("pro_title"), color = Teal, fontWeight = FontWeight.Bold)
-                        Text(tr("pro_body"), color = Color.White)
+                        Text(tr("pro_title"), color = Accent, fontWeight = FontWeight.Bold)
+                        Text(tr("pro_body"), color = Ink)
                     }
                 }
                 Spacer(Modifier.height(20.dp))
-                if (busy) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.CenterHorizontally))
+                if (busy) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.CenterHorizontally))
                 else PillButton(tr("skip_now"), { onSubmit(name.trim(), username, age.toInt(), source) }, Modifier.fillMaxWidth())
             }
         }
@@ -168,20 +200,39 @@ private fun sourceLabel(s: String): String = when (s) {
 
 @Composable
 private fun Title(t: String) =
-    Text(t, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp))
+    Text(t, color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(vertical = 12.dp))
 
+/**
+ * The dark rounded text field used for search, names, usernames, ages and member search.
+ * Step 56 (plan v3.10.1): [imeAction] / [onAction] give the keyboard its action key (Search for the search page: it hides the keyboard
+ * and runs the action; the text stays), and [clearable] shows an X that empties the box. Nothing here clears text by itself.
+ */
 @Composable
-fun GlassField(value: String, onChange: (String) -> Unit, hint: String) {
+fun GlassField(
+    value: String, onChange: (String) -> Unit, hint: String,
+    imeAction: ImeAction = ImeAction.Done, onAction: (() -> Unit)? = null, clearable: Boolean = false
+) {
+    val hideKeyboard = rememberKeyboardHider()
     OutlinedTextField(
-        value, onChange, placeholder = { Text(hint, color = Color.White.copy(.6f)) },
+        value, onChange, placeholder = { Text(hint, color = Ink.copy(.6f)) },
         modifier = Modifier.fillMaxWidth(), singleLine = true,
         shape = androidx.compose.foundation.shape.RoundedCornerShape(50),
+        keyboardOptions = KeyboardOptions(imeAction = imeAction),
+        keyboardActions = if (onAction != null) KeyboardActions(onAny = { hideKeyboard(); onAction() }) else KeyboardActions.Default,
+        trailingIcon = if (clearable && value.isNotEmpty()) {
+            {
+                Icon(
+                    Icons.Filled.Close, tr("a11y_clear"), tint = Ink.copy(.8f),
+                    modifier = Modifier.padding(end = 4.dp).clip(CircleShape).clickable { onChange("") }.padding(6.dp)
+                )
+            }
+        } else null,
         // dark inset field like the "Send Message..." bar of the reference
         colors = OutlinedTextFieldDefaults.colors(
-            focusedTextColor = Color.White, unfocusedTextColor = Color.White,
-            focusedBorderColor = Teal, unfocusedBorderColor = InsetBorder,
+            focusedTextColor = Ink, unfocusedTextColor = Ink,
+            focusedBorderColor = Accent, unfocusedBorderColor = InsetBorder,
             focusedContainerColor = InsetFill, unfocusedContainerColor = InsetFill,
-            cursorColor = Color.White
+            cursorColor = Ink
         )
     )
 }

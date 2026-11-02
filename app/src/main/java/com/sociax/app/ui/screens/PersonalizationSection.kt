@@ -37,16 +37,16 @@ fun PersonalizationSection(api: ApiClient?) {
     LaunchedEffect(Unit) { load() }
 
     Section(tr("personalization")) {
-        Text(tr("personalization_sub"), color = Color.White.copy(.7f), fontSize = 12.sp)
+        Text(tr("personalization_sub"), color = Ink.copy(.7f), fontSize = 12.sp)
         state?.let {
-            Text(trf("recs_counts", it.events, it.notInterested, it.hiddenCreators, it.retentionDays), color = Color.White, fontSize = 13.sp)
+            Text(trf("recs_counts", it.events, it.notInterested, it.hiddenCreators, it.retentionDays), color = Ink, fontSize = 13.sp)
         }
-        if (failed) Text(tr("no_server"), color = Color(0xFFFFB4A8), fontSize = 12.sp)
-        if (done) Text(tr("reset_recs_done"), color = Teal, fontSize = 13.sp)
+        if (failed) Text(tr("no_server"), color = ErrorInk, fontSize = 12.sp)
+        if (done) Text(tr("reset_recs_done"), color = Accent, fontSize = 13.sp)
         if (!confirming) {
             PillButton(tr("reset_recs"), { confirming = true; done = false }, filled = false)
         } else {
-            Text(tr("reset_recs_confirm"), color = Color.White, fontSize = 13.sp)
+            Text(tr("reset_recs_confirm"), color = Ink, fontSize = 13.sp)
             Row {
                 PillButton(tr("yes"), {
                     if (!busy) {

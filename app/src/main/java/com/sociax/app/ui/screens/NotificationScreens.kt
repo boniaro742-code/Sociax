@@ -41,14 +41,14 @@ fun NotificationsSection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     Section(tr("notifications")) {
         if (me == null || api == null) {
-            Text(tr("notifications_body"), color = Color.White)
+            Text(tr("notifications_body"), color = Ink)
         } else {
             NOTIF_GROUPS.forEach { g ->
                 var on by remember(me.notifications[g]) { mutableStateOf(me.notifications[g] ?: true) }
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 10.dp)) {
                     Column(Modifier.weight(1f)) {
-                        Text(tr("notif_g_$g"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                        Text(tr("notif_g_${g}_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                        Text(tr("notif_g_$g"), color = Ink, fontWeight = FontWeight.SemiBold)
+                        Text(tr("notif_g_${g}_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
                     }
                     Switch(
                         on,
@@ -61,12 +61,12 @@ fun NotificationsSection(me: Me?, api: ApiClient?, onMeChanged: (Me) -> Unit) {
                                 catch (e: Exception) { on = old; error = errText(e) }
                             }
                         },
-                        colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                        colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
                     )
                 }
             }
-            error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
-            Text(tr("notif_note"), color = Color.White.copy(.6f), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+            error?.let { Text(it, color = ErrorInk, fontSize = 13.sp) }
+            Text(tr("notif_note"), color = Ink.copy(.6f), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
             PushSwitch(api)                                                              // Step 46
         }
     }
@@ -99,8 +99,8 @@ private fun PushSwitch(api: ApiClient) {
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 14.dp)) {
         Column(Modifier.weight(1f)) {
-            Text(tr("push_title"), color = Color.White, fontWeight = FontWeight.SemiBold)
-            Text(tr("push_sub"), color = Color.White.copy(.6f), fontSize = 12.sp)
+            Text(tr("push_title"), color = Ink, fontWeight = FontWeight.SemiBold)
+            Text(tr("push_sub"), color = Ink.copy(.6f), fontSize = 12.sp)
         }
         Switch(
             on,
@@ -113,11 +113,11 @@ private fun PushSwitch(api: ApiClient) {
                 }
             },
             enabled = available && !busy,
-            colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+            colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
         )
     }
-    if (!available) Text(tr("push_unavailable"), color = Color.White.copy(.6f), fontSize = 12.sp)
-    msg?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp) }
+    if (!available) Text(tr("push_unavailable"), color = Ink.copy(.6f), fontSize = 12.sp)
+    msg?.let { Text(it, color = ErrorInk, fontSize = 13.sp) }
 }
 
 @Composable
@@ -154,9 +154,9 @@ fun NotificationsScreen(
     Column(Modifier.fillMaxSize().statusBarsPadding().padding(16.dp)) {
         TopBar(tr("notifications"), onBack)
         NavRow(tr("follow_requests"), onRequests)
-        error?.let { Text(it, color = Color(0xFFFF8A8A)) }
-        if (loading) CircularProgressIndicator(color = Teal)
-        else if (entries.isEmpty()) Text(tr("notif_empty"), color = Color.White.copy(.7f), modifier = Modifier.padding(top = 8.dp))
+        error?.let { Text(it, color = ErrorInk) }
+        if (loading) CircularProgressIndicator(color = Accent)
+        else if (entries.isEmpty()) Text(tr("notif_empty"), color = Ink.copy(.7f), modifier = Modifier.padding(top = 8.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(top = 6.dp, bottom = 24.dp)) {
             items(entries, key = { it.id }) { n ->
                 GlassPanel(
@@ -169,16 +169,16 @@ fun NotificationsScreen(
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (n.username == null) {   // the AI
-                            Box(Modifier.size(44.dp).clip(CircleShape).background(Teal.copy(.25f)), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Filled.AutoAwesome, null, tint = Teal)
+                            Box(Modifier.size(44.dp).clip(CircleShape).background(Accent.copy(.25f)), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Filled.AutoAwesome, null, tint = Accent)
                             }
                         } else Avatar(n.avatarUrl, 44)
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(notifText(n), color = Color.White, fontWeight = if (n.read) FontWeight.Normal else FontWeight.Bold)
-                            Text(timeAgo(n.createdAt), color = Color.White.copy(.6f), fontSize = 12.sp)
+                            Text(notifText(n), color = Ink, fontWeight = if (n.read) FontWeight.Normal else FontWeight.Bold)
+                            Text(timeAgo(n.createdAt), color = Ink.copy(.6f), fontSize = 12.sp)
                         }
-                        if (!n.read) Box(Modifier.size(10.dp).clip(CircleShape).background(Teal))
+                        if (!n.read) Box(Modifier.size(10.dp).clip(CircleShape).background(Accent))
                     }
                 }
             }

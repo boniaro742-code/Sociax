@@ -45,8 +45,8 @@ import kotlin.math.abs
 // Plan v3.3 section 2 + 3: mandatory four-digit PIN or pattern lock, lock screen, "Forgot PIN/Pattern?" and the
 // App Lock block in Settings. The PIN / pattern is only ever kept as a salted verifier on this phone (see AppLock.kt).
 
-private val ErrorRed = Color(0xFFFF8A8A)
-private val WaitAmber = Color(0xFFFFE08A)
+private val ErrorRed = ErrorInk
+private val WaitAmber = NoticeInk
 
 /** Four dots + on-screen number keys. [onComplete] gets the 4 digits; the entry then clears itself. */
 @Composable
@@ -57,8 +57,8 @@ internal fun PinEntry(enabled: Boolean, onComplete: (String) -> Unit) {
             repeat(4) { i ->
                 Box(
                     Modifier.size(16.dp).clip(CircleShape)
-                        .background(if (i < digits.length) Teal else Color(0x33FFFFFF))
-                        .border(1.dp, Color(0x66FFFFFF), CircleShape)
+                        .background(if (i < digits.length) Accent else FieldFill)
+                        .border(1.dp, Hairline, CircleShape)
                 )
             }
         }
@@ -81,7 +81,7 @@ internal fun PinEntry(enabled: Boolean, onComplete: (String) -> Unit) {
                                     }
                                 },
                             contentAlignment = Alignment.Center
-                        ) { Text(if (k == "<") "⌫" else k, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Medium) }
+                        ) { Text(if (k == "<") "⌫" else k, color = Ink, fontSize = 24.sp, fontWeight = FontWeight.Medium) }
                     }
                 }
             }
@@ -95,7 +95,7 @@ internal fun PatternEntry(enabled: Boolean, onComplete: (List<Int>) -> Unit) {
     var size by remember { mutableStateOf(IntSize.Zero) }
     var path by remember { mutableStateOf(listOf<Int>()) }
     var finger by remember { mutableStateOf<Offset?>(null) }
-    val accent = Teal
+    val accent = Accent
 
     fun centerOf(i: Int): Offset {
         val cell = size.width / 3f
@@ -140,7 +140,7 @@ internal fun PatternEntry(enabled: Boolean, onComplete: (List<Int>) -> Unit) {
             if (path.isNotEmpty() && f != null) drawLine(accent.copy(alpha = .6f), c(path.last()), f, strokeWidth = 6.dp.toPx(), cap = StrokeCap.Round)
             for (i in 0..8) {
                 val on = i in path
-                drawCircle(if (on) accent else Color(0x88FFFFFF), if (on) 12.dp.toPx() else 7.dp.toPx(), c(i))
+                drawCircle(if (on) accent else Ink.copy(alpha = 0.25f), if (on) 12.dp.toPx() else 7.dp.toPx(), c(i))
             }
         }
     }
@@ -172,7 +172,7 @@ internal fun LockChallenge(lock: AppLock, onSuccess: () -> Unit) {
     }
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(tr(if (type == LockType.PIN) "lock_enter_pin" else "lock_draw_to_unlock"),
-            color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+            color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
         when {
             waitLeft > 0 -> Text(trf("lock_wait", waitLeft), color = WaitAmber, fontSize = 13.sp, textAlign = TextAlign.Center)
             wrongLeft >= 0 -> Text(trf("lock_wrong", wrongLeft), color = ErrorRed, fontSize = 13.sp, textAlign = TextAlign.Center)
@@ -224,12 +224,12 @@ fun LockSetupScreen(lock: AppLock, mandatory: Boolean, onDone: () -> Unit, onCan
     ) {
         SociaxLogo(size = 110.dp)
         Spacer(Modifier.height(8.dp))
-        Text(tr("lock_setup_title"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(tr("lock_setup_title"), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         val t = type
         if (t == null) {
             Text(tr(if (mandatory) "lock_setup_sub_must" else "lock_setup_sub"),
-                color = Color.White.copy(.8f), fontSize = 14.sp, textAlign = TextAlign.Center)
+                color = Ink.copy(.8f), fontSize = 14.sp, textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp))
             PillButton(tr("lock_type_pin"), { type = LockType.PIN }, Modifier.fillMaxWidth())
             Spacer(Modifier.height(10.dp))
@@ -246,10 +246,10 @@ fun LockSetupScreen(lock: AppLock, mandatory: Boolean, onDone: () -> Unit, onCan
                 !confirming -> "lock_draw_pattern"
                 else -> "lock_confirm_pattern"
             }
-            Text(tr(key), color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+            Text(tr(key), color = Ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
             msg?.let { Text(tr(it), color = ErrorRed, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp)) }
             Spacer(Modifier.height(16.dp))
-            if (saving) CircularProgressIndicator(color = Teal)
+            if (saving) CircularProgressIndicator(color = Accent)
             else if (t == LockType.PIN) PinEntry(true) { onSecret(it) }
             else PatternEntry(true) { p -> if (p.size < 4) msg = "lock_pattern_short" else onSecret(p.joinToString("-")) }
         }
@@ -269,7 +269,7 @@ fun LockScreen(lock: AppLock, onUnlocked: () -> Unit, onForgot: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         LockChallenge(lock, onUnlocked)
         Spacer(Modifier.height(16.dp))
-        Text(tr("lock_forgot"), color = Teal, fontWeight = FontWeight.SemiBold,
+        Text(tr("lock_forgot"), color = Accent, fontWeight = FontWeight.SemiBold,
             modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onForgot).padding(12.dp))
     }
 }
@@ -288,11 +288,11 @@ fun LockRecoveryScreen(activity: Activity, auth: AuthRepository, api: ApiClient,
     ) {
         SociaxLogo(size = 110.dp)
         Spacer(Modifier.height(12.dp))
-        Text(tr("lock_recover_title"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(tr("lock_recover_title"), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
         Spacer(Modifier.height(10.dp))
-        Text(tr("lock_recover_body"), color = Color.White.copy(.85f), fontSize = 14.sp, textAlign = TextAlign.Center)
+        Text(tr("lock_recover_body"), color = Ink.copy(.85f), fontSize = 14.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(20.dp))
-        if (busy) CircularProgressIndicator(color = Teal)
+        if (busy) CircularProgressIndicator(color = Accent)
         else {
             PillButton(tr("lock_recover_btn"), {
                 scope.launch {
@@ -316,7 +316,7 @@ fun LockRecoveryScreen(activity: Activity, auth: AuthRepository, api: ApiClient,
         }
         msg?.let { Text(tr(it), color = ErrorRed, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp)) }
         Spacer(Modifier.height(16.dp))
-        Text(tr("lock_recover_support"), color = Color.White.copy(.6f), fontSize = 12.sp, textAlign = TextAlign.Center)
+        Text(tr("lock_recover_support"), color = Ink.copy(.6f), fontSize = 12.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -348,9 +348,9 @@ internal fun AppLockSection(lock: AppLock, onChange: () -> Unit) {
     var timeout by remember { mutableIntStateOf(lock.timeoutSec) }
     fun label(sec: Int) = when (sec) { 30 -> "lock_t_30s"; 60 -> "lock_t_1m"; 300 -> "lock_t_5m"; else -> "lock_t_15m" }
     Section(tr("lock_settings_title")) {
-        Text(trf("lock_current_type", tr(if (lock.type == LockType.PATTERN) "lock_type_pattern" else "lock_type_pin")), color = Color.White)
+        Text(trf("lock_current_type", tr(if (lock.type == LockType.PATTERN) "lock_type_pattern" else "lock_type_pin")), color = Ink)
         PillButton(tr("lock_change"), onChange, Modifier.fillMaxWidth())
-        Text(tr("lock_timeout"), color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text(tr("lock_timeout"), color = Ink, fontWeight = FontWeight.SemiBold)
         AppLock.TIMEOUTS.chunked(2).forEach { pair ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 pair.forEach { sec ->
@@ -358,7 +358,7 @@ internal fun AppLockSection(lock: AppLock, onChange: () -> Unit) {
                 }
             }
         }
-        Text(tr("lock_timeout_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        Text(tr("lock_timeout_note"), color = Ink.copy(.6f), fontSize = 12.sp)
     }
 }
 
@@ -373,7 +373,7 @@ fun ChangeLockScreen(lock: AppLock, onBack: () -> Unit, onDone: () -> Unit) {
         Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.fillMaxWidth()) { TopBar(tr("lock_change"), onBack) }
-            Text(tr("lock_verify_current"), color = Color.White.copy(.85f), fontSize = 14.sp, textAlign = TextAlign.Center)
+            Text(tr("lock_verify_current"), color = Ink.copy(.85f), fontSize = 14.sp, textAlign = TextAlign.Center)
             Spacer(Modifier.height(20.dp))
             LockChallenge(lock) { verified = true }
         }

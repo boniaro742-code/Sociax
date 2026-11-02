@@ -39,7 +39,7 @@ import com.sociax.app.ui.theme.*
 // Home shows a dismissible, non-blocking prompt (Yes / No / X); Settings > Daily Alarms has the master switch, times,
 // five sounds with preview and the permission status. Nothing here ever blocks normal use of the app.
 
-private val WaitAmber = Color(0xFFFFE08A)
+private val WaitAmber = NoticeInk
 
 private fun turnOn(ctx: Context, prefs: Prefs) {
     prefs.alarmsEnabled = true
@@ -67,8 +67,8 @@ internal fun AlarmPrompt() {
     GlassPanel(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(verticalAlignment = Alignment.Top) {
-                Text(tr("alarm_prompt"), color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Icon(Icons.Filled.Close, tr("close"), tint = Color.White.copy(.8f),
+                Text(tr("alarm_prompt"), color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Icon(Icons.Filled.Close, tr("close"), tint = Ink.copy(.8f),
                     modifier = Modifier.size(28.dp).clip(RoundedCornerShape(50)).clickable {
                         prefs.alarmPromptDone = true; visible = false; denied = false
                     }.padding(4.dp))
@@ -138,8 +138,8 @@ internal fun DailyAlarmSection() {
     Section(tr("alarm_settings_title")) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(tr("alarm_master"), color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text(tr(if (enabled) "alarm_state_on" else "alarm_state_off"), color = if (enabled) Teal else Color.White.copy(.6f), fontSize = 12.sp)
+                Text(tr("alarm_master"), color = Ink, fontWeight = FontWeight.SemiBold)
+                Text(tr(if (enabled) "alarm_state_on" else "alarm_state_off"), color = if (enabled) Accent else Ink.copy(.6f), fontSize = 12.sp)
             }
             Switch(
                 enabled, { on ->
@@ -147,34 +147,34 @@ internal fun DailyAlarmSection() {
                     else if (needsPermissionRequest(ctx)) launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     else switchOn()
                 },
-                colors = SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+                colors = SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
             )
         }
-        Text(tr("alarm_times"), color = Color.White.copy(.85f), fontSize = 13.sp)
+        Text(tr("alarm_times"), color = Ink.copy(.85f), fontSize = 13.sp)
         if (enabled) DailyAlarm.nextTimes().minOrNull()?.let {
-            Text(trf("alarm_next", timeText(it)), color = Teal, fontSize = 13.sp)
+            Text(trf("alarm_next", timeText(it)), color = Accent, fontSize = 13.sp)
         }
         msg?.let { Text(tr(it), color = WaitAmber, fontSize = 13.sp) }
 
-        Text(tr("alarm_sound"), color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text(tr("alarm_sound"), color = Ink, fontWeight = FontWeight.SemiBold)
         DailyAlarm.SOUNDS.forEachIndexed { i, s ->
             Row(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
                     .clickable { sound = i; prefs.alarmSound = i }.padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(tr(s.nameKey), color = Color.White, fontWeight = if (sound == i) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
-                if (sound == i) { Icon(Icons.Filled.Check, null, tint = Teal); Spacer(Modifier.width(8.dp)) }
+                Text(tr(s.nameKey), color = Ink, fontWeight = if (sound == i) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
+                if (sound == i) { Icon(Icons.Filled.Check, null, tint = Accent); Spacer(Modifier.width(8.dp)) }
                 PillButton(tr(if (playing == i) "alarm_stop_preview" else "preview"), { if (playing == i) stopPreview() else preview(i) }, filled = false)
             }
         }
 
         Text(trf("alarm_perm_status", tr(if (allowed) "alarm_perm_allowed" else "alarm_perm_denied")),
-            color = if (allowed) Color.White.copy(.8f) else WaitAmber, fontSize = 13.sp)
+            color = if (allowed) Ink.copy(.8f) else WaitAmber, fontSize = 13.sp)
         if (!allowed) PillButton(tr("alarm_open_settings"), {
             ctx.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         }, Modifier.fillMaxWidth(), filled = false)
-        Text(tr("alarm_honest"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        Text(tr("alarm_honest"), color = Ink.copy(.6f), fontSize = 12.sp)
     }
 }

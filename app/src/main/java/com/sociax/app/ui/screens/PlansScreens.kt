@@ -42,24 +42,24 @@ internal fun PlansSection(api: ApiClient?) {
     Section(tr("plans_title")) {
         media?.let { m ->
             val used = String.format(Locale.US, "%.1f", m.usedMb)
-            Text(trf("storage_line", used, m.limitMb), color = Color.White, fontSize = 14.sp)
+            Text(trf("storage_line", used, m.limitMb), color = Ink, fontSize = 14.sp)
             LinearProgressIndicator(
                 progress = { if (m.limitMb > 0) (m.usedMb / m.limitMb).toFloat().coerceIn(0f, 1f) else 0f },
-                modifier = Modifier.fillMaxWidth().height(8.dp), color = Teal, trackColor = Color(0x33FFFFFF), strokeCap = StrokeCap.Round)
+                modifier = Modifier.fillMaxWidth().height(8.dp), color = Accent, trackColor = FieldFill, strokeCap = StrokeCap.Round)
             Text(trf("storage_left", String.format(Locale.US, "%.1f", m.remainingMb.coerceAtLeast(0.0))),
-                color = Color.White.copy(.65f), fontSize = 12.sp)
+                color = Ink.copy(.65f), fontSize = 12.sp)
             if (m.resetAt > 0) {
                 val at = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT)
                     .format(java.util.Date(m.resetAt * 1000))
-                Text(trf("storage_reset", at), color = Color.White.copy(.65f), fontSize = 12.sp)
-            } else Text(tr("storage_reset_none"), color = Color.White.copy(.65f), fontSize = 12.sp)
+                Text(trf("storage_reset", at), color = Ink.copy(.65f), fontSize = 12.sp)
+            } else Text(tr("storage_reset_none"), color = Ink.copy(.65f), fontSize = 12.sp)
         }
         ai?.takeIf { it.limit > 0 }?.let {
             Spacer(Modifier.height(4.dp))
-            Text(trf("ai_usage_line", it.used, it.limit, (it.resetInSeconds / 3600).toInt() + 1), color = Color.White, fontSize = 14.sp)
+            Text(trf("ai_usage_line", it.used, it.limit, (it.resetInSeconds / 3600).toInt() + 1), color = Ink, fontSize = 14.sp)
         }
         Spacer(Modifier.height(4.dp))
-        Text(tr("plan_free_note"), color = Color.White.copy(.75f), fontSize = 13.sp)
+        Text(tr("plan_free_note"), color = Ink.copy(.75f), fontSize = 13.sp)
     }
     // ONE Pro card only (plan v3.2): no duplicate Pro cards or separate upgrade buttons.
     ProSection(api, media?.pro == true || ai?.pro == true,
@@ -75,16 +75,16 @@ fun LimitDialog(event: LimitEvent, onSeePlans: () -> Unit, onDismiss: () -> Unit
     val ai = event.kind == "ai"
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF121C2E),
-        title = { Text(tr(if (ai) "limit_ai_title" else "limit_media_title"), color = Color.White, fontWeight = FontWeight.Bold) },
+        containerColor = CardFill,
+        title = { Text(tr(if (ai) "limit_ai_title" else "limit_media_title"), color = Ink, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(trf(if (ai) "limit_ai_body" else "limit_media_body", event.resetHours), color = Color.White.copy(.85f))
-                Text(tr(if (ai) "limit_ai_offer" else "limit_media_offer"), color = Color.White.copy(.85f))
+                Text(trf(if (ai) "limit_ai_body" else "limit_media_body", event.resetHours), color = Ink.copy(.85f))
+                Text(tr(if (ai) "limit_ai_offer" else "limit_media_offer"), color = Ink.copy(.85f))
             }
         },
-        confirmButton = { TextButton(onClick = onSeePlans) { Text(tr("limit_see_plans"), color = Teal, fontWeight = FontWeight.Bold) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("limit_wait"), color = Color.White) } }
+        confirmButton = { TextButton(onClick = onSeePlans) { Text(tr("limit_see_plans"), color = Accent, fontWeight = FontWeight.Bold) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("limit_wait"), color = Ink) } }
     )
 }
 
@@ -157,15 +157,15 @@ private fun ProSection(api: ApiClient?, active: Boolean, expiresAt: Long, onPaid
     }
 
     Section(tr("pro_title")) {
-        Text(tr("pro_body"), color = Color.White)
-        Text(tr("pro_terms"), color = Color.White.copy(.65f), fontSize = 12.sp)
+        Text(tr("pro_body"), color = Ink)
+        Text(tr("pro_terms"), color = Ink.copy(.65f), fontSize = 12.sp)
         if (active && expiresAt > 0) {
             val until = java.text.DateFormat.getDateInstance().format(java.util.Date(expiresAt * 1000))
-            Text(trf("pro_active", until), color = Teal, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(trf("pro_active", until), color = Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
         PillButton(tr(if (active) "pro_buy_more" else "pro_buy"), { buy() }, Modifier.fillMaxWidth())
         if (pending != null) PillButton(tr("pay_check"), { check() }, Modifier.fillMaxWidth(), filled = false)
-        msg?.let { Text(tr(it), color = Color(0xFFFFE08A), fontSize = 12.sp) }
-        Text(tr("pay_test_note"), color = Color.White.copy(.5f), fontSize = 11.sp)
+        msg?.let { Text(tr(it), color = NoticeInk, fontSize = 12.sp) }
+        Text(tr("pay_test_note"), color = Ink.copy(.5f), fontSize = 11.sp)
     }
 }

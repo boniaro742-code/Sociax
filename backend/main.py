@@ -26,8 +26,10 @@ import ai_providers  # after load_dotenv so it sees XAI_API_KEY / GEMINI_API_KEY
 import ranker  # Step 39: For You scoring (pure code)
 import rank_engine  # Step 48: optional Go ranking engine (backend-go/); Python ranks by itself when it is off or fails
 import metrics  # Step 47: how long requests take / how often they fail (route patterns only)
+import ai_create  # Step 55 (plan v3.2 / v3.9): AI Create = generate -> preview -> explicit Yes / No
+import durable  # Step 54 (plan v3.9.2): the database survives restarts / deploys (snapshot backup + restore)
 
-API_VERSION = "0.58.0"
+API_VERSION = "0.64.0"
 app = FastAPI(title="Sociax API", version=API_VERSION)
 
 # Cloudinary credentials: server-side only (env vars). The Android app never sees the secret.
@@ -75,6 +77,18 @@ async def _timing(request, call_next):
     if ms >= SLOW_REQUEST_MS:
         _perf_log.warning("slow request: %s %s took %d ms (status %s)", request.method, route, ms, response.status_code)
     return response
+
+
+@app.middleware("http")
+async def _saved_data_gate(request, call_next):
+    """Step 54 (plan v3.9.2 section 3): while the saved database is not loaded, answer 503 instead of pretending the account is
+    empty. The app treats 5xx as "server starting": it stays signed in and retries. Health checks stay open."""
+    if not _durable.serving and request.url.path not in ("/health", "/health/config"):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"detail": {"code": "data_unavailable",
+                                        "message": "Your saved data is not available yet. Please try again in a minute."}},
+                            status_code=503, headers={"Retry-After": "30"})
+    return await call_next(request)
 
 
 def rate_limit(uid: str, key: str, limit: int, window_s: int):
@@ -386,6 +400,21 @@ def init_db():
         con.commit()
 
 
+# Step 54 (plan v3.9.2 section 2): on a host with an erasable disk (Render free) the saved copy of the database is put back
+# BEFORE any table is created. See durable.py: only a CONFIRMED "nothing was ever saved" starts a new database; an unreachable
+# or unreadable copy keeps the server closed (503) instead of showing an empty account. Off by default outside Render.
+_durable = durable.Durable(DB_PATH, durable.store_from_env(), min_interval=float(os.getenv("BACKUP_MIN_INTERVAL", "45")))
+
+
+def _restart_after_late_restore():
+    """The saved copy could not be fetched at start-up and arrived later. The module already created its tables on an empty
+    file, so the cleanest safe way is to start again: the next start restores before anything is created."""
+    logging.getLogger("sociax").warning("durable: saved data restored late: restarting the server to load it cleanly")
+    os._exit(75)      # the host starts the service again; nothing is lost (the restored file is not backed up over the good copy)
+
+
+_durable.on_restored = _restart_after_late_restore
+_durable.startup()
 init_db()
 
 
@@ -455,7 +484,13 @@ def config_report() -> dict:
                                    ("CLOUDINARY_API_SECRET", CLOUD_SECRET)) if not v]
     if not any(ai.values()):
         missing.append("XAI_API_KEY or GEMINI_API_KEY or ANTHROPIC_API_KEY (at least one AI provider)")
+    dur = _durable.report()
+    if os.getenv("RENDER") and not dur["enabled"]:
+        missing.append("SOCIAX_BACKUP (the database is erased on every restart: durable backup is OFF)")
+    if dur["enabled"] and dur["state"] != "ready":
+        missing.append("saved data not loaded yet (state: " + dur["state"] + ")")
     return {"ok": not missing, "version": API_VERSION, "database": True, "firebase": firebase, "cloudinary": cloud,
+            "durable_storage": dur,      # Step 54: booleans / numbers only (state, age of the last backup, last error name)
             "ai": ai, "payments": payments, "missing": missing,
             "rank_engine": rank_engine.client.report(),      # Step 48: booleans and counters only (never the address or the secret)
             "dev_auth_enabled": DEV_AUTH}      # must be false in production
@@ -1029,7 +1064,11 @@ def confirm_avatar(body: AvatarConfirm, uid: str = Depends(current_user)):
     it does not trust sizes or URLs sent by the client."""
     require_cloudinary()
     import httpx
-    if not body.public_id.startswith(f"users/{uid}/avatar_") or ".." in body.public_id:
+    own = body.public_id.startswith(f"users/{uid}/avatar_")
+    if not own:        # Step 55: the person's OWN unused AI Create image (they said Yes to "use as profile photo")
+        with closing(db()) as c0:
+            own = ai_create.is_pending_draft(c0, uid, body.public_id, "image")
+    if not own or ".." in body.public_id:
         raise HTTPException(403, "Not your upload")
     try:
         r = httpx.get(
@@ -1083,7 +1122,13 @@ def onboard(body: Onboarding, uid: str = Depends(current_user)):
         raise HTTPException(422, "Username must be 3-20 characters: a-z, 0-9, _ or .")
     source = body.source if body.source in SOURCES else None
     with closing(db()) as con:
-        if con.execute("SELECT 1 FROM users WHERE uid=?", (uid,)).fetchone():
+        have = con.execute("SELECT username FROM users WHERE uid=?", (uid,)).fetchone()
+        if have:
+            # Step 57 (plan v3.10.0): the profile is saved in ONE insert, so "a row exists" = onboarding is complete. If the phone sends the
+            # same request again (the first answer was lost on a weak network, or a double tap) it is NOT an error and it NEVER changes
+            # what is saved: the person simply goes on to Home. Another @username for an existing account is still refused.
+            if have["username"].lower() == username:
+                return {"username": "@" + have["username"], "already_onboarded": True}
             raise HTTPException(409, "Already onboarded")
         try:
             con.execute(
@@ -1178,6 +1223,153 @@ def quota_all(uid: str = Depends(current_user)):
 @app.get("/ai/status")
 def ai_status_endpoint(uid: str = Depends(current_user)):
     return {"providers": ai_providers.configured()}
+
+
+# =====================================================================
+# Step 55 (plan v3.2 sections 1 and 4-6, v3.9 section 34): AI Create. Generate -> PREVIEW -> the person says Yes (use) or No (discard).
+# Nothing is posted / set without that Yes. Pro only; 4 images and 3 videos per rolling 24 h, counted here. The rules live in
+# ai_create.py (tested). NO provider is chosen yet: until GEN_PROVIDER names one, every route answers "not available yet".
+# =====================================================================
+with closing(db()) as _gc:
+    ai_create.ensure_tables(_gc)
+_gen_provider = ai_create.provider_from_env()
+if isinstance(_gen_provider, ai_create.FakeProvider) and not DEV_AUTH:
+    _gen_provider = None          # the fake provider exists for tests / local development only
+
+_GEN_TEXT = {
+    "generation_unavailable": "AI Create is not available yet. Please try again later.",
+    "gen_limit": "You have used today's AI Create allowance for this type.",
+    "generation_failed": "The AI could not finish this one. It did not count against your allowance. Please try again.",
+    "draft_not_found": "This AI Create result was not found.",
+    "draft_not_usable": "This AI Create result was already used or discarded.",
+    "bad_request": "Please check what you asked for and try again.",
+}
+
+
+def _gen_http(e: "ai_create.AiCreateError") -> HTTPException:
+    detail = {"code": e.code, "retryable": e.status in (502, 503), "message": _GEN_TEXT.get(e.code, "AI Create failed.")}
+    if isinstance(e, ai_create.LimitReached):
+        detail.update({"kind": e.kind, "reset_in_seconds": e.reset_in})
+    return HTTPException(e.status, detail)
+
+
+def _gen_kind_media(kind: str) -> str:
+    return "short" if kind == "video" else "post"
+
+
+def _store_generated(uid: str, kind: str, data: bytes, mime: str) -> str:
+    """Saves a generated file in the person's OWN Cloudinary folder as an unpublished draft (post_gen_ / short_gen_)."""
+    require_cloudinary()
+    import httpx
+    import secrets as _secrets
+    public_id = f"users/{uid}/{_gen_kind_media(kind)}_gen_{_secrets.token_hex(6)}"
+    params = {"public_id": public_id, "timestamp": int(time.time())}
+    try:
+        r = httpx.post(f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/{'video' if kind == 'video' else 'image'}/upload",
+                       data={**params, "api_key": CLOUD_KEY, "signature": cloud_sign(params)},
+                       files={"file": ("generated", data, mime)}, timeout=120)
+    except httpx.HTTPError:
+        raise ai_create.ProviderFailed("upload")
+    if r.status_code != 200:
+        raise ai_create.ProviderFailed("upload")
+    return public_id
+
+
+def _gen_draft_out(d: dict) -> dict:
+    video = d["kind"] == "video"
+    return {"id": d["id"], "kind": d["kind"], "preview_url": video_url(d["public_id"]) if video else image_url(d["public_id"]),
+            "poster_url": poster_url(d["public_id"]) if video else None,
+            "expires_in_seconds": max(d["created_at"] + ai_create.DRAFT_TTL_SECONDS - int(time.time()), 0)}
+
+
+def _gen_expire(con) -> None:
+    gone = ai_create.expire_old(con)
+    for public_id, kind in gone:
+        trash_media(con, public_id, _gen_kind_media(kind))
+    if gone:
+        con.commit()
+        kick_cloud_cleanup()
+
+
+@app.get("/ai/create/status")
+def ai_create_status(uid: str = Depends(current_user)):
+    with closing(db()) as con:
+        _gen_expire(con)
+        quota = ai_create.quota_state(con, uid)
+    return {"pro": is_pro(uid), "quota": quota,
+            "available": {k: bool(_gen_provider and k in _gen_provider.kinds()) for k in ai_create.LIMITS}}
+
+
+class GenCreate(BaseModel):
+    kind: Literal["image", "video"]
+    prompt: str = Field(min_length=1, max_length=ai_create.PROMPT_MAX)
+
+
+@app.post("/ai/create")
+def ai_create_make(body: GenCreate, uid: str = Depends(current_user)):
+    """Makes ONE draft (never posts anything). The prompt is not stored or logged."""
+    rate_limit(uid, "gen", 10, 3600)
+    if not is_pro(uid):
+        raise HTTPException(403, {"code": "pro_required", "retryable": False, "message": "AI Create is part of Sociax Pro."})
+    with closing(db()) as con:
+        _gen_expire(con)
+        try:
+            draft = ai_create.generate(con, uid, body.kind, body.prompt, _gen_provider,
+                                       lambda kind, data, mime: _store_generated(uid, kind, data, mime))
+        except ai_create.AiCreateError as e:
+            raise _gen_http(e)
+        quota = ai_create.quota_state(con, uid)
+    return {"draft": _gen_draft_out(draft), "quota": quota}
+
+
+@app.post("/ai/create/{draft_id}/discard")
+def ai_create_discard(draft_id: int, uid: str = Depends(current_user)):
+    """The "No": the draft is dropped and its file queued for deletion."""
+    with closing(db()) as con:
+        try:
+            d = ai_create.discard(con, uid, draft_id)
+        except ai_create.AiCreateError as e:
+            raise _gen_http(e)
+        trash_media(con, d["public_id"], _gen_kind_media(d["kind"]))
+        con.commit()
+    kick_cloud_cleanup()
+    return {"ok": True}
+
+
+class GenUse(BaseModel):
+    destination: Literal["post", "profile", "group"]
+    caption: str = Field(default="", max_length=2200)
+    audience: Literal["public", "followers"] = "public"
+
+
+@app.post("/ai/create/{draft_id}/use")
+def ai_create_use(draft_id: int, body: GenUse, uid: str = Depends(current_user)):
+    """The explicit Yes. A draft can be used ONCE; if the action fails it goes back to 'draft' so the person can try again."""
+    if body.destination == "group":
+        raise HTTPException(422, {"code": "destination_unavailable", "retryable": False,
+                                  "message": "Sending AI Create results to a group is not available yet: group chats have no photos or videos yet."})
+    with closing(db()) as con:
+        try:
+            kind = ai_create.get_draft(con, uid, draft_id)["kind"]
+            if body.destination == "profile" and kind != "image":
+                raise ai_create.BadRequest("only an image can be a profile photo")
+            d = ai_create.claim(con, uid, draft_id)
+        except ai_create.AiCreateError as e:
+            raise _gen_http(e)
+    try:
+        if body.destination == "profile":
+            result = confirm_avatar(AvatarConfirm(public_id=d["public_id"]), uid)
+        elif d["kind"] == "image":
+            result = create_post(NewPost(public_id=d["public_id"], caption=body.caption, audience=body.audience), uid)
+        else:
+            result = create_short(NewShort(public_id=d["public_id"], caption=body.caption, audience=body.audience), uid)
+    except BaseException:
+        with closing(db()) as con:
+            ai_create.release(con, uid, draft_id)
+        raise
+    with closing(db()) as con:
+        ai_create.complete(con, uid, draft_id)
+    return {"ok": True, "destination": body.destination, "result": result}
 
 
 class AiAsk(BaseModel):
@@ -3536,3 +3728,12 @@ def ads_impression(body: AdImpression, uid: str = Depends(current_user)):
 # Step 46: the push worker runs only when the owner switches it on (PUSH_ENABLED=1) AND real Firebase login is used (not DEV_AUTH).
 if os.getenv("PUSH_ENABLED") == "1" and not DEV_AUTH:
     start_push_worker()
+
+
+# ---- Step 54 (plan v3.9.2): start the background backup last (every table exists by now) and save once more on stop ----
+_durable.start()
+
+
+@app.on_event("shutdown")
+def _save_database_on_stop():
+    _durable.stop(flush=True)

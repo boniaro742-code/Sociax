@@ -14,20 +14,32 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.sociax.app.data.AdsController
 import com.sociax.app.data.ApiClient
 import com.sociax.app.data.ApiException
 import com.sociax.app.data.AuthRepository
+import com.sociax.app.data.SessionCheck
 import com.sociax.app.data.Me
 import com.sociax.app.data.Perf
 import com.sociax.app.data.Prefs
@@ -44,32 +56,47 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 class MainActivity : ComponentActivity() {
+    /** Status / navigation bar icons: dark on a light page, light on a dark page or over full-screen media. */
+    fun applySystemBars(lightIcons: Boolean) {
+        val clear = android.graphics.Color.TRANSPARENT
+        enableEdgeToEdge(
+            statusBarStyle = if (lightIcons) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear),
+            navigationBarStyle = if (lightIcons) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Gradient continues behind the status bar and navigation bar (like the reference). Icons stay light: every background is blue/navy.
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        )
-        // Saved accent colour is applied before the first screen is drawn.
-        Teal = Color(Prefs(applicationContext).accent)
+        // Step 59: the page colour continues behind the status bar and the navigation bar. The icon colour follows the theme (see SociaxApp).
+        val startPrefs = Prefs(applicationContext)
+        val startMode = runCatching { ThemeMode.valueOf(startPrefs.themeMode) }.getOrDefault(ThemeMode.LIGHT)
+        val systemDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        val startDark = when (startMode) { ThemeMode.DARK -> true; ThemeMode.LIGHT -> false; ThemeMode.SYSTEM -> systemDark }
+        applySystemBars(startDark)
+        // Saved accent colour and light / dark palette are applied before the first screen is drawn (no flash of the wrong colours).
+        Accent = Color(startPrefs.accent)
+        applyPalette(startDark)
         val auth = AuthRepository(applicationContext)
         val api = ApiClient { auth.idToken() }
         setContent { SociaxApp(this, auth, api) }
     }
 }
 
-enum class Tab(val icon: ImageVector, val label: String, val labelKey: String) {
-    // thin outlined icons like the reference
-    Home(Icons.Outlined.Home, "Home", "tab_home"),
-    Bio(Icons.Outlined.Person, "Bio", "tab_bio"),
-    Video(Icons.Outlined.PlayCircle, "Short Video", "tab_video"),
-    Chat(Icons.Outlined.ChatBubbleOutline, "Chat", "tab_chat")
+enum class Tab(val icon: ImageVector, val activeIcon: ImageVector, val label: String, val labelKey: String) {
+    // outlined icon when idle, filled icon + purple label when selected (new design)
+    Home(Icons.Outlined.Home, Icons.Filled.Home, "Home", "tab_home"),
+    Bio(Icons.Outlined.Person, Icons.Filled.Person, "Profile", "tab_bio"),
+    Video(Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle, "Short Video", "tab_video"),
+    Chat(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chat", "tab_chat"),
+    // Step 58 (plan v3.9.5 / v3.9.6): the fifth button. EVERY AI tool lives behind it; Chat has no AI of its own.
+    // Step 59: the AI tab is the Sociax AI chat itself.
+    Ai(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI", "tab_ai")
 }
 
 private enum class Stage { Loading, LoggedOut, NeedsOnboarding, Ready }
 
-/** Full-screen pages that open on top of the 4 tabs. */
+/** Full-screen pages that open on top of the 5 tabs. */
 private sealed interface Overlay {
     data object Settings : Overlay
     data object EditProfile : Overlay
@@ -82,7 +109,6 @@ private sealed interface Overlay {
     data object NewStory : Overlay
     data class Story(val groups: List<StoryGroup>, val index: Int) : Overlay
     data object NewGroup : Overlay
-    data object Ai : Overlay
     data class UserProfile(val username: String, val backTo: Overlay? = null) : Overlay
     data class FollowList(val username: String, val kind: String, val backTo: Overlay? = null) : Overlay   // Step 20
     data class Conversation(val chat: ChatSummary) : Overlay
@@ -107,6 +133,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     var accent by remember { mutableStateOf(prefs.accent) }
     var reduceMotion by remember { mutableStateOf(prefs.reduceMotion) }
     val dark = isDarkMode(themeMode)
+    SideEffect { applyPalette(dark) }          // Step 59: every colour token follows the chosen theme (light / dark / system)
     var stage by remember { mutableStateOf(Stage.Loading) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -114,9 +141,12 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     var waking by remember { mutableStateOf(false) }                  // Step 51: the server is being retried automatically (sleeping free server)
     var overlay by remember { mutableStateOf<Overlay?>(null) }
     var me by remember { mutableStateOf(Me(onboarded = false)) }
+    var remembered by remember { mutableStateOf(prefs.rememberedAccounts) }   // Step 54: accounts used on this phone (login screen list)
+    LaunchedEffect(stage) { if (stage == Stage.LoggedOut) remembered = prefs.rememberedAccounts }
     var tab by remember { mutableStateOf(Tab.Home) }
     var feedKey by remember { mutableIntStateOf(0) }   // bump to reload the feed
     val shorts = remember { ShortsState() }            // Short Video feed, kept while pages open on top
+    val aiChat = remember { AiChatState() }            // Step 59: the AI conversation, kept while the person visits other tabs (wiped on log out)
     val ads = remember { AdsController(api, activity.applicationContext) }   // Step 41: AdMob (Free accounts only, decided by the server)
     // Step 41: every time the Short Video tab is the screen the person is looking at (opened, or back from Settings / a payment),
     // ask the SERVER again who may see ads: a Pro purchase switches ads off at once, a reached cap or a new day is noticed.
@@ -126,7 +156,14 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
 
     // Phone back button closes an open page. Leaving comments/search may change counts, so reload the feed.
     var returnTo by remember { mutableStateOf<Overlay?>(null) }   // a post opened from "Saved posts" goes back there
+    // Step 56 (plan v3.10.1): while the soft keyboard is open, Back only CLOSES THE KEYBOARD. The page stays and the typed text stays.
+    // (Normally the keyboard itself takes the Back key first; this is the safety net for phones / Android versions where it does not.)
+    val rootView = LocalView.current
+    val focusManager = LocalFocusManager.current
+    val hideKeyboard = rememberKeyboardHider()
     BackHandler(enabled = overlay != null) {
+        val keyboardUp = ViewCompat.getRootWindowInsets(rootView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        if (keyboardUp) { hideKeyboard(); focusManager.clearFocus(); return@BackHandler }
         val o = overlay
         overlay = when (o) {
             is Overlay.GroupInfo -> Overlay.Conversation(o.chat)       // group info goes back to its chat
@@ -159,17 +196,21 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
         return Strings.get(lang, "err_connecting") + " [" + detail + " \u00B7 " + host + "]"
     }
 
-    suspend fun routeAfterLogin() {
+    suspend fun routeAfterLoginRun() {
         // Step 51: a free Render server sleeps and answers 502 / 503 or times out while it wakes up. Try up to 3 times by itself
         // (8 s, then 20 s apart) before showing the error, so the person does not have to tap "Try again" for a normal wake-up.
         val pauses = longArrayOf(8_000L, 20_000L)
         var attempt = 0
+        var dataLoading = false
+        var refreshedOnce = false      // Step 57: a 401 first gets ONE fresh token before it is believed
         while (true) {
             var problem: String? = null
             try {
                 startupError = null
                 me = api.me()
                 if (me.onboarded) syncLanguage()
+                // Step 54 (plan v3.9.2 section 3): remember WHO signed in here (name + @username only) for the login screen
+                if (me.onboarded) auth.uid?.let { prefs.rememberAccount(it, me.displayName.orEmpty(), me.username.orEmpty()) }
                 stage = if (me.onboarded) Stage.Ready else Stage.NeedsOnboarding
                 error = null
                 waking = false
@@ -178,8 +219,25 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
             } catch (e: ApiException) {
                 // Plan v3.6 section 4: choosing a Google account is NOT a finished login. If the server answers wrong, say what it means.
                 android.util.Log.w("SociaxAuth", "after Google sign-in the server answered HTTP ${e.code}")
-                if (e.code >= 500) {        // the server is starting or failing: stay signed in
+                if (e.code == 401 && !refreshedOnce) {
+                    // Step 57 (plan v3.10.0 section 4): "not signed in" from the server may only mean an OLD token. Ask Firebase for a new one
+                    // first. Only when Firebase itself says the session is invalid is the person asked to sign in again; no network = keep waiting.
+                    refreshedOnce = true
+                    when (auth.refreshSession()) {
+                        SessionCheck.Valid -> continue
+                        SessionCheck.Offline -> problem = "offline"
+                        SessionCheck.Invalid -> {
+                            auth.signOut(); waking = false
+                            error = Strings.get(lang, "err_session_ended")
+                            stage = Stage.LoggedOut
+                            return
+                        }
+                    }
+                } else if (e.code >= 500) {        // the server is starting or failing: stay signed in
                     problem = "HTTP ${e.code}"
+                    // Step 54: the server answers 503 "data_unavailable" while it loads the saved database. That is NOT an empty
+                    // account: the person stays signed in and is told so (never sent to "create a new account").
+                    if (e.reason == "data_unavailable") dataLoading = true
                 } else {
                     waking = false
                     error = when (e.code) {
@@ -200,10 +258,20 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                 delay(pauses[attempt]); attempt++
             } else {
                 waking = false
-                startupError = connectFailure(problem ?: "error"); stage = Stage.Loading
+                startupError = if (dataLoading) Strings.get(lang, "err_data_loading") else connectFailure(problem ?: "error")
+                stage = Stage.Loading
                 return
             }
         }
+    }
+
+    // Step 57 (plan v3.10.0 section 5): ONE start-up / session decision at a time. "Try again", the network coming back and a fresh
+    // Google sign-in can all ask for it; a second request while one is running is ignored (no double work, no flicker).
+    val routingNow = remember { booleanArrayOf(false) }
+    suspend fun routeAfterLogin() {
+        if (routingNow[0]) return
+        routingNow[0] = true
+        try { routeAfterLoginRun() } finally { routingNow[0] = false }
     }
 
     // Step 37: timings (Logcat tag SociaxPerf): process start -> first screen -> login screen / home
@@ -214,8 +282,25 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
         })
     }
 
+    // Step 57 (plan v3.10.0 sections 3 and 5): the screen stays on "loading" until Firebase has said whether a saved session exists, so a
+    // signed-in person is never shown the login or the onboarding page first, and goes straight to Home.
     LaunchedEffect(Unit) {
-        if (auth.isSignedIn) routeAfterLogin() else stage = Stage.LoggedOut
+        if (auth.awaitSession()) routeAfterLogin() else stage = Stage.LoggedOut
+    }
+
+    // Step 57: the app was opened without internet (the saved account is kept, nothing is reset). When the network comes back, the same
+    // start-up decision runs again by itself; the person does not need to tap anything.
+    val startupErrorNow by rememberUpdatedState(startupError)
+    DisposableEffect(Unit) {
+        val cm = activity.getSystemService(android.net.ConnectivityManager::class.java)
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                handler.post { if (startupErrorNow != null) scope.launch { routeAfterLogin() } }
+            }
+        }
+        val registered = runCatching { cm?.registerDefaultNetworkCallback(callback) }.isSuccess
+        onDispose { if (registered) runCatching { cm?.unregisterNetworkCallback(callback) } }
     }
 
     // Step 25: "Online / last seen" heartbeat, only while the app is on screen and my switch is on
@@ -233,6 +318,27 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     val lock = remember { com.sociax.app.data.AppLock(activity) }
     var lockSet by remember { mutableStateOf(lock.isSet) }
     var locked by remember { mutableStateOf(lock.isSet) }
+    // Step 54 (plan v3.9.2): logging out keeps the lock (it is a setting) but it belongs to ONE account. Someone else signing in on
+    // this phone never uses it and never sees anything of the previous account: their lock is cleared and they set their own.
+    // Just signed in with Google = the same proof "Forgot PIN" asks for, so the same account is not asked for the PIN a second time.
+    fun adoptLockAfterSignIn() {
+        val uid = auth.uid ?: return
+        if (lock.isSet) {
+            val owner = lock.ownerUid
+            if (owner != null && owner != uid) { lock.clear(); lockSet = false }
+            else lock.bindOwner(uid)
+        }
+        locked = false
+    }
+    // An app that starts with a session already open: a lock made before this version has no owner yet and belongs to this account.
+    LaunchedEffect(stage) {
+        val uid = auth.uid
+        if (stage == Stage.Ready && uid != null && lock.isSet) {
+            val owner = lock.ownerUid
+            if (owner == null) lock.bindOwner(uid)
+            else if (owner != uid) { lock.clear(); lockSet = false; locked = false }
+        }
+    }
     DisposableEffect(lifeOwner) {
         var leftAt = 0L
         val obs = LifecycleEventObserver { _, ev ->
@@ -262,12 +368,39 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
 
     // Step 27: number of unread notifications (dot on the Home bell), refreshed every 30 s while no page is open on top
     var notifUnread by remember { mutableIntStateOf(0) }
+    var chatUnread by remember { mutableIntStateOf(0) }   // Step 59: the purple dot on the Chat tab (unread messages)
     LaunchedEffect(stage, appOnScreen, overlay == null) {
         if (stage != Stage.Ready || !appOnScreen || overlay != null) return@LaunchedEffect
         while (true) {
             try { notifUnread = api.notificationUnread() } catch (e: CancellationException) { throw e } catch (e: Exception) { }
             delay(30000)
         }
+    }
+
+    // Step 59: unread chat messages (dot on the Chat tab), refreshed every 45 s while no page is open on top. The Chat tab itself looks every 6 s.
+    LaunchedEffect(stage, appOnScreen, overlay == null, tab) {
+        if (stage != Stage.Ready || !appOnScreen || overlay != null) return@LaunchedEffect
+        while (true) {
+            try { chatUnread = api.chats().sumOf { it.unread } } catch (e: CancellationException) { throw e } catch (e: Exception) { }
+            delay(if (tab == Tab.Chat) 6000L else 45000L)
+        }
+    }
+
+    // Step 59: status bar icons: light over the dark video / story, otherwise they follow the theme (dark icons on the light page)
+    val mediaScreen = stage == Stage.Ready && ((overlay == null && tab == Tab.Video) || overlay is Overlay.Story)
+    LaunchedEffect(dark, mediaScreen) { activity.applySystemBars(dark || mediaScreen) }
+
+    // Step 57: Firebase ends the session by itself (account disabled / deleted, revoked elsewhere) -> back to sign-in with a clear message.
+    // A normal Log out, a restart and a network problem never reach this.
+    DisposableEffect(Unit) {
+        val stop = auth.observeEnded {
+            if (stage != Stage.LoggedOut) {
+                error = Strings.get(lang, "err_session_ended")
+                ads.reset(); shorts.reset(); aiChat.reset(); locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0
+                me = Me(onboarded = false); stage = Stage.LoggedOut
+            }
+        }
+        onDispose { stop() }
     }
 
     SociaxTheme(themeMode, textSize.factor, lang, reduceMotion) {
@@ -281,32 +414,62 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
             }
             when {
                 stage == Stage.Loading -> LoadingScreen(startupError ?: (if (waking) Strings.get(lang, "waking_server") else null), if (startupError != null) ({ scope.launch { routeAfterLogin() } }) else null)
-                stage == Stage.LoggedOut -> LoginScreen(busy, error, lang, { lang = it; prefs.language = it.code }) {
+                stage == Stage.LoggedOut -> LoginScreen(busy, error, lang, { lang = it; prefs.language = it.code },
+                    remembered = remembered, onForget = { id -> prefs.forgetAccount(id); remembered = prefs.rememberedAccounts }) {
                     scope.launch {
                         busy = true; error = null
                         Perf.start("login_to_ready")
                         auth.signInWithGoogle(activity)
-                            .onSuccess { routeAfterLogin() }
+                            .onSuccess { adoptLockAfterSignIn(); routeAfterLogin() }
                             .onFailure { error = it.message ?: "Sign-in failed" }
                         busy = false
                     }
                 }
-                stage == Stage.NeedsOnboarding -> OnboardingScreen(busy, error) { name, username, age, source ->
-                    scope.launch {
-                        busy = true; error = null
-                        try {
-                            api.onboard(name, username, age, source, if (prefs.languageChosen) lang.code else null)
-                            me = api.me()
-                            stage = Stage.Ready
-                        } catch (e: ApiException) {
-                            error = e.message
-                        } catch (e: Exception) {
-                            error = "Cannot reach the Sociax server."
+                stage == Stage.NeedsOnboarding -> {
+                    // Step 57 (plan v3.10.0 sections 2 and 6): the first-time form is only for an account the SERVER says has no profile yet.
+                    // What was typed before (this account only) is put back, so closing the app half way does not mean starting again.
+                    val onboardUid = auth.uid
+                    val seed = remember(onboardUid) {
+                        onboardUid?.let { u ->
+                            prefs.onboardingDraft(u)
+                                ?: prefs.rememberedAccounts.firstOrNull { it.uid == u }?.let { Triple(it.displayName, it.username.removePrefix("@"), "") }
                         }
-                        busy = false
+                    }
+                    OnboardingScreen(busy, error,
+                        initialName = seed?.first.orEmpty(), initialUsername = seed?.second.orEmpty(), initialAge = seed?.third.orEmpty(),
+                        onDraft = { n, u, a -> onboardUid?.let { id -> prefs.saveOnboardingDraft(id, n, u, a) } }
+                    ) { name, username, age, source ->
+                        scope.launch {
+                            busy = true; error = null
+                            try {
+                                try {
+                                    api.onboard(name, username, age, source, if (prefs.languageChosen) lang.code else null)
+                                } catch (e: ApiException) {
+                                    // 409 = this account already has a profile (an earlier try was saved but its answer was lost): that is
+                                    // success, not an error. 409 for a taken @username has no profile behind it and is shown as before.
+                                    val saved = if (e.code == 409) runCatching { api.me() }.getOrNull() else null
+                                    if (saved?.onboarded != true) throw e
+                                }
+                                // "Onboarding complete" only when the server really returns the saved profile.
+                                val fresh = api.me()
+                                if (fresh.onboarded) {
+                                    me = fresh
+                                    prefs.clearOnboardingDraft()
+                                    auth.uid?.let { prefs.rememberAccount(it, fresh.displayName.orEmpty(), fresh.username.orEmpty()) }
+                                    stage = Stage.Ready
+                                } else error = Strings.get(lang, "err_connecting")
+                            } catch (e: ApiException) {
+                                error = e.message
+                            } catch (e: Exception) {
+                                error = "Cannot reach the Sociax server."
+                            }
+                            busy = false
+                        }
                     }
                 }
-                else -> Box(Modifier.fillMaxSize().then(if (overlay != null && overlay !is Overlay.Story) Modifier.navigationBarsPadding() else Modifier)) { when (val o = overlay) {
+                // Step 56: every page opened on top of the tabs (Search, Chat, AI, comments, edit profile, new post ...) is lifted above the keyboard HERE, once.
+                // navigationBarsPadding first, then imePadding: Compose subtracts what was already used, so nothing is added twice (no blank gap).
+                else -> Box(Modifier.fillMaxSize().then(if (overlay != null && overlay !is Overlay.Story) Modifier.navigationBarsPadding().imePadding() else Modifier)) { when (val o = overlay) {
                     Overlay.EditProfile -> EditProfileScreen(me, api, onSaved = { me = it }, onBack = { overlay = null })
                     Overlay.Settings -> SettingsScreen(
                         mode = themeMode, onMode = { themeMode = it; prefs.themeMode = it.name },
@@ -314,7 +477,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                             lang = it; prefs.language = it.code
                             scope.launch { runCatching { api.setLanguage(it.code) } }      // also saved on the account (the phone keeps its own copy)
                         },
-                        accent = accent, onAccent = { accent = it; prefs.accent = it; Teal = Color(it) },
+                        accent = accent, onAccent = { accent = it; prefs.accent = it; Accent = Color(it) },
                         textSize = textSize, onTextSize = { textSize = it; prefs.textSize = it.name },
                         reduceMotion = reduceMotion, onReduceMotion = { reduceMotion = it; prefs.reduceMotion = it },
                         onBack = { overlay = null }, api = api,
@@ -323,9 +486,12 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                         onBlocked = { overlay = Overlay.Blocked },
                         onSaved = { overlay = Overlay.Saved },
                         onSavedShorts = { overlay = Overlay.SavedShorts },
-                        onDeleted = { prefs.pushEnabled = false; auth.signOut(); ads.reset(); shorts.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; me = Me(onboarded = false); stage = Stage.LoggedOut },
+                        onDeleted = { auth.uid?.let { prefs.forgetAccount(it) }; prefs.clearOnboardingDraft(); prefs.pushEnabled = false; auth.signOut(); ads.reset(); shorts.reset(); aiChat.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0; me = Me(onboarded = false); stage = Stage.LoggedOut },
                         onLogout = {
-                            val finish = { auth.signOut(); ads.reset(); shorts.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; me = Me(onboarded = false); stage = Stage.LoggedOut }
+                            // Step 54 (plan v3.9.2 section 1): log out ONLY ends this session. Nothing on the server is touched (no call to
+                            // deleteAccount), the App Lock and the settings stay on the phone, and only what is on screen in memory is cleared so
+                            // that a different account signing in next sees nothing of this one.
+                            val finish = { auth.signOut(); prefs.clearOnboardingDraft(); ads.reset(); shorts.reset(); aiChat.reset(); locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0; me = Me(onboarded = false); stage = Stage.LoggedOut }
                             // Step 46: tell the server this phone no longer wants push for this account BEFORE signing out (3 s at most; the phone stops showing pushes at once anyway)
                             if (prefs.pushEnabled) scope.launch { withTimeoutOrNull(3000) { com.sociax.app.data.PushRegistrar.disable(activity, api) }; prefs.pushEnabled = false; finish() }
                             else finish()
@@ -361,7 +527,6 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     is Overlay.Story -> StoryViewerScreen(api, o.groups, o.index, onClose = { overlay = null; feedKey++ })
                     Overlay.NewChat -> NewChatScreen(api, onBack = { overlay = null },
                         onOpen = { overlay = Overlay.Conversation(it) })
-                    Overlay.Ai -> AiAssistantScreen(api, onBack = { overlay = null })
                     is Overlay.UserProfile -> UserProfileScreen(api, o.username, onBack = { overlay = o.backTo },
                         onOpenPost = { overlay = Overlay.Comments(it) }, onChat = { overlay = Overlay.Conversation(it) },
                         onOpenList = { name, kind -> overlay = Overlay.FollowList(name, kind, backTo = o) })
@@ -396,16 +561,19 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                     api = api, onOpenPost = { overlay = Overlay.Comments(it) })
                                 Tab.Video -> ShortVideoScreen(api, shorts, ads,
                                     onCreate = { overlay = Overlay.NewShort },
+                                    onSearch = { overlay = Overlay.Search },
                                     onComments = { overlay = Overlay.ShortComments(it) },
                                     onBack = { tab = Tab.Home })
+                                // Step 58: Chat = people and groups only. No AI card, button or shortcut here (plan v3.9.6 section 2).
                                 Tab.Chat -> ChatListScreen(api,
                                     onOpen = { overlay = Overlay.Conversation(it) },
                                     onNewChat = { overlay = Overlay.NewChat },
-                                    onNewGroup = { overlay = Overlay.NewGroup },
-                                    onAi = { overlay = Overlay.Ai })
+                                    onNewGroup = { overlay = Overlay.NewGroup })
+                                // Step 59: the AI tab is the Sociax AI chat (its gear opens Settings).
+                                Tab.Ai -> AiHubScreen(api, aiChat, onSettings = { overlay = Overlay.Settings })
                             }
                         }
-                        BottomBar(tab, Modifier.align(Alignment.BottomCenter)) { tab = it }
+                        BottomBar(tab, chatUnread > 0, Modifier.align(Alignment.BottomCenter)) { tab = it }
                     }
                 } }
             }
@@ -413,7 +581,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
             if (stage == Stage.Ready && (!lockSet || locked)) {
                 LockGate(activity, auth, api, lock, mustSetup = !lockSet,
                     onUnlocked = { locked = false },
-                    onSetupDone = { lockSet = true; locked = false })
+                    onSetupDone = { lock.bindOwner(auth.uid); lockSet = true; locked = false })
             }
         }
       }
@@ -421,29 +589,35 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
 }
 
 /**
- * Exactly four primary tabs, floating frosted pill like the reference: round frosted circles, the selected one is
- * a soft-white circle with a dark icon. It floats above the page (the page scrolls behind it).
+ * Exactly five primary tabs (Home, Profile, Short Video, Chat, AI) in a white bar docked at the bottom, like the new design: a thin edge
+ * on top, an outlined grey icon with its name under it, and the selected tab in purple (filled icon, bold name). The Chat tab shows a
+ * small purple dot while there are unread messages. Every tab is at least 56 dp tall (the Android minimum touch size is 48 dp) and
+ * tells TalkBack its name, that it is a tab, and whether it is selected.
  */
 @Composable
-fun BottomBar(selected: Tab, modifier: Modifier = Modifier, onSelect: (Tab) -> Unit) {
-    GlassPanel(
-        modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 14.dp).navigationBarsPadding(),
-        corner = 40, fill = BarFill, borderColor = ControlBorder
-    ) {
+fun BottomBar(current: Tab, chatDot: Boolean, modifier: Modifier = Modifier, onSelect: (Tab) -> Unit) {
+    Column(modifier.fillMaxWidth().background(CardFill)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
         Row(
-            Modifier.fillMaxWidth().padding(7.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Tab.values().forEach { t ->
-                val active = t == selected
-                Box(
-                    Modifier.size(46.dp).clip(CircleShape)
-                        .background(if (active) PaperWhite else BarItemFill)
-                        .clickable { onSelect(t) },
-                    contentAlignment = Alignment.Center
+                val active = t == current
+                val name = tr(t.labelKey)
+                val tint = if (active) Accent else Ink.copy(alpha = 0.55f)
+                Column(
+                    Modifier.weight(1f).height(BottomBarHeight)
+                        .semantics { selected = active; contentDescription = name }
+                        .clickable(role = Role.Tab) { onSelect(t) },
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(t.icon, tr(t.labelKey), tint = if (active) Navy else Color.White, modifier = Modifier.size(23.dp))
+                    Box {
+                        Icon(if (active) t.activeIcon else t.icon, null, tint = tint, modifier = Modifier.size(25.dp))
+                        if (t == Tab.Chat && chatDot) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-1).dp).size(9.dp).clip(CircleShape).background(Accent))
+                    }
+                    Spacer(Modifier.height(3.dp))
+                    Text(name, color = tint, fontSize = 11.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
                 }
             }
         }

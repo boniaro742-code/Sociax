@@ -30,15 +30,15 @@ import kotlinx.coroutines.launch
 /** Anything (a post author, a search result) can open someone's profile through this. Set once in MainActivity. */
 val LocalOpenProfile = staticCompositionLocalOf<(String) -> Unit> { {} }
 
-/** Photo thumbnails, three per row (used on other people's profiles and on my own Bio page). */
+/** Photo thumbnails, three per row with thin gaps (used on other people's profiles and on my own Profile page). */
 @Composable
 fun PostsGrid(posts: List<Post>, onOpen: (Post) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         posts.chunked(3).forEach { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                 row.forEach { p ->
-                    Box(Modifier.weight(1f).aspectRatio(1f).clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
-                        .background(Color(0x22FFFFFF)).clickable { onOpen(p) }) {
+                    Box(Modifier.weight(1f).aspectRatio(1f).clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .background(FieldFill).clickable { onOpen(p) }) {
                         p.imageUrl?.let { AsyncImage(it, p.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
                     }
                 }
@@ -78,16 +78,16 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
         TopBar(username, onBack)
-        error?.let { Text(it, color = Color(0xFFFF8A8A), fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
-        if (loading) CircularProgressIndicator(color = Teal)
+        error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+        if (loading) CircularProgressIndicator(color = Accent)
         val p = profile
         if (p != null) {
-            Avatar(p.avatarUrl, 96)
+            RingedAvatar(p.avatarUrl, 92)
             Spacer(Modifier.height(10.dp))
-            Text(p.displayName, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text(p.username, color = Teal)
-            if (p.followsMe && !p.isMe) Text(tr("follows_you"), color = Color.White.copy(.6f), fontSize = 12.sp)
-            if (p.bio.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(p.bio, color = Color.White.copy(.8f), textAlign = TextAlign.Center) }
+            Text(p.displayName, color = Ink, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+            Text(p.username, color = Ink.copy(.55f), fontSize = 14.sp)
+            if (p.followsMe && !p.isMe) Text(tr("follows_you"), color = Ink.copy(.6f), fontSize = 12.sp)
+            if (p.bio.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(p.bio, color = Ink.copy(.8f), textAlign = TextAlign.Center) }
             Spacer(Modifier.height(14.dp))
             GlassPanel(Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -126,9 +126,9 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
                 Spacer(Modifier.height(14.dp))
             }
             when {
-                p.iBlocked -> Text(tr("you_blocked"), color = Color.White.copy(.7f), textAlign = TextAlign.Center)
-                !p.canViewPosts -> Text(tr("private_account_note"), color = Color.White.copy(.7f), textAlign = TextAlign.Center)
-                posts.isEmpty() -> Text(tr("no_posts_yet"), color = Color.White.copy(.7f))
+                p.iBlocked -> Text(tr("you_blocked"), color = Ink.copy(.7f), textAlign = TextAlign.Center)
+                !p.canViewPosts -> Text(tr("private_account_note"), color = Ink.copy(.7f), textAlign = TextAlign.Center)
+                posts.isEmpty() -> Text(tr("no_posts_yet"), color = Ink.copy(.7f))
                 else -> PostsGrid(posts, onOpenPost)
             }
         }
@@ -138,6 +138,6 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
 
 @Composable
 private fun ProfileStat(v: String, l: String, modifier: Modifier = Modifier) = Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-    Text(v, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-    Text(l, color = Color.White.copy(.7f), fontSize = 12.sp)
+    Text(v, color = Ink, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+    Text(l, color = Ink.copy(.55f), fontSize = 13.sp)
 }

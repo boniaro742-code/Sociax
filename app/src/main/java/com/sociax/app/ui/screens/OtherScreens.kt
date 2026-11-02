@@ -12,6 +12,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -21,75 +25,93 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.ui.theme.*
 
-// ---------------- BIO / PROFILE ----------------
+// ---------------- PROFILE (the "Bio" tab, new design) ----------------
 @Composable
 fun BioScreen(me: com.sociax.app.data.Me, onOpenList: (String) -> Unit = {}, onSettings: () -> Unit, onEdit: () -> Unit, onRequests: () -> Unit, onCreateGroup: () -> Unit = {},
               api: com.sociax.app.data.ApiClient? = null, onOpenPost: (com.sociax.app.data.Post) -> Unit = {}) {
     val addBio = tr("add_bio")
+    val context = androidx.compose.ui.platform.LocalContext.current
     var myPosts by remember { mutableStateOf<List<com.sociax.app.data.Post>>(emptyList()) }
     LaunchedEffect(me.username, me.posts) {
         val u = me.username ?: return@LaunchedEffect
         if (api == null) return@LaunchedEffect
         try { myPosts = api.userPosts(u) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { }
     }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            GlassIconButton(Icons.Filled.Settings, tr("settings"), onSettings)
+        // header: the title in the middle, Settings on the right
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.size(44.dp))
+            Text(tr("tab_bio"), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+            GlassIconButton(Icons.Outlined.Settings, tr("settings"), onSettings, size = 44)
         }
-        Avatar(me.avatarUrl, 96)
+        Spacer(Modifier.height(14.dp))
+        RingedAvatar(me.avatarUrl, 92)
         Spacer(Modifier.height(10.dp))
-        Text(me.displayName.orEmpty(), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text(me.username.orEmpty(), color = Teal)
-        Spacer(Modifier.height(6.dp))
-        Text(me.bio.ifBlank { addBio }, color = Color.White.copy(.8f))
-        Spacer(Modifier.height(14.dp))
-        GlassPanel(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                Stat(me.posts.toString(), tr("posts"))
-                Stat(me.followers.toString(), tr("followers"), Modifier.clickable { onOpenList("followers") })
-                Stat(me.following.toString(), tr("following"), Modifier.clickable { onOpenList("following") })
-            }
+        Text(me.displayName.orEmpty(), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Text(me.username.orEmpty(), color = Ink.copy(.55f), fontSize = 14.sp)
+        Spacer(Modifier.height(8.dp))
+        Text(me.bio.ifBlank { addBio }, color = Ink.copy(.8f), fontSize = 14.sp, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(18.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+            Stat(compactCount(me.posts), tr("posts"))
+            Stat(compactCount(me.followers), tr("followers"), Modifier.clickable { onOpenList("followers") })
+            Stat(compactCount(me.following), tr("following"), Modifier.clickable { onOpenList("following") })
         }
-        Spacer(Modifier.height(14.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PillButton(tr("edit_profile"), onEdit); PillButton(tr("share_profile"), {}, filled = false)
+        Spacer(Modifier.height(18.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            IconActionButton(tr("edit_profile"), Icons.Outlined.Edit, onEdit, Modifier.weight(1f), filled = false)
+            IconActionButton(tr("share_profile"), Icons.Outlined.Share, {
+                val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "text/plain"; putExtra(android.content.Intent.EXTRA_TEXT, me.username.orEmpty() + " on Sociax")
+                }
+                context.startActivity(android.content.Intent.createChooser(send, "Share"))
+            }, Modifier.weight(1f))
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(16.dp))
         GlassPanel(Modifier.fillMaxWidth().clickable(onClick = onRequests)) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.PersonAdd, null, tint = Teal)
+                Icon(Icons.Filled.PersonAdd, null, tint = Accent)
                 Spacer(Modifier.width(10.dp))
-                Text(tr("follow_requests"), color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                Text(if (me.isPrivate) tr("private_acc") else tr("public_acc"), color = Color.White.copy(.6f), fontSize = 12.sp)
+                Text(tr("follow_requests"), color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(if (me.isPrivate) tr("private_acc") else tr("public_acc"), color = Ink.copy(.6f), fontSize = 12.sp)
             }
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(12.dp))
         // Groups area (private, never discoverable via search)
         GlassPanel(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Groups, null, tint = Teal)
+                Icon(Icons.Filled.Groups, null, tint = Accent)
                 Spacer(Modifier.width(10.dp))
-                Text(tr("groups"), color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(tr("groups"), color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 PillButton(tr("create"), onCreateGroup)
             }
         }
-        if (myPosts.isNotEmpty()) {
-            Spacer(Modifier.height(14.dp))
-            PostsGrid(myPosts, onOpenPost)
+        // the "Posts" tab line of the new design (the only tab this app has: there are no tagged photos)
+        Spacer(Modifier.height(18.dp))
+        Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.GridView, null, tint = Accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(tr("posts"), color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         }
-        Spacer(Modifier.height(bottomBarClearance()))   // the floating tab bar covers the bottom of the page
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline)) {
+            Box(Modifier.fillMaxWidth(0.3f).height(2.dp).align(Alignment.CenterStart).background(Accent))
+        }
+        Spacer(Modifier.height(10.dp))
+        if (myPosts.isNotEmpty()) PostsGrid(myPosts, onOpenPost)
+        Spacer(Modifier.height(bottomBarClearance()))   // the docked tab bar covers the bottom of the page
     }
 }
 
 @Composable
 private fun Stat(v: String, l: String, modifier: Modifier = Modifier) = Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-    Text(v, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-    Text(l, color = Color.White.copy(.7f), fontSize = 12.sp)
+    Text(v, color = Ink, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+    Text(l, color = Ink.copy(.55f), fontSize = 13.sp)
 }
 
 // ---------------- SETTINGS ----------------
@@ -108,24 +130,24 @@ fun SettingsScreen(
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack); Spacer(Modifier.width(12.dp))
-            Text(tr("settings"), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(tr("settings"), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
         Section(tr("appearance")) {
             OptionRow(tr("mode_dark"), mode == ThemeMode.DARK) { onMode(ThemeMode.DARK) }
             OptionRow(tr("mode_light"), mode == ThemeMode.LIGHT) { onMode(ThemeMode.LIGHT) }
             OptionRow(tr("mode_system"), mode == ThemeMode.SYSTEM) { onMode(ThemeMode.SYSTEM) }
-            Text(tr("accent"), color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(tr("accent"), color = Ink, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 AccentChoices.forEach { c ->
                     Box(
                         Modifier.size(38.dp).clip(CircleShape).background(Color(c))
-                            .border(if (c == accent) 3.dp else 1.dp, if (c == accent) Color.White else GlassBorder, CircleShape)
+                            .border(if (c == accent) 3.dp else 1.dp, if (c == accent) Ink else GlassBorder, CircleShape)
                             .clickable { onAccent(c) },
                         contentAlignment = Alignment.Center
-                    ) { if (c == accent) Icon(Icons.Filled.Check, null, tint = Navy, modifier = Modifier.size(20.dp)) }
+                    ) { if (c == accent) Icon(Icons.Filled.Check, null, tint = OnAccent, modifier = Modifier.size(20.dp)) }
                 }
             }
-            Text(tr("text_size"), color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text(tr("text_size"), color = Ink, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton(tr("size_small"), { onTextSize(TextSize.SMALL) }, filled = textSize == TextSize.SMALL)
                 PillButton(tr("size_normal"), { onTextSize(TextSize.NORMAL) }, filled = textSize == TextSize.NORMAL)
@@ -150,11 +172,12 @@ fun SettingsScreen(
             if (me != null) NavRow(tr("edit_profile"), onEditProfile)
             GoogleAccountRow()
             PillButton(tr("logout"), onLogout)
+            Text(tr("logout_note"), color = Ink.copy(.6f), fontSize = 12.sp)   // Step 54: log out only ends the session
             DeleteAccountRow(api, onDeleted)
         }
         HelpLegalSection(api)
         Section(tr("about")) {
-            Text("Sociax  •  " + tr("version") + " " + com.sociax.app.BuildConfig.VERSION_NAME, color = Color.White.copy(.8f))
+            Text("Sociax  •  " + tr("version") + " " + com.sociax.app.BuildConfig.VERSION_NAME, color = Ink.copy(.8f))
         }
         Spacer(Modifier.height(16.dp))
     }
@@ -165,12 +188,12 @@ fun SettingsScreen(
 private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-            .background(if (selected) Color(0x26FFFFFF) else Color.Transparent)
+            .background(if (selected) SoftAccent else Color.Transparent)
             .clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = Color.White, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
-        if (selected) Icon(Icons.Filled.Check, null, tint = Teal)
+        Text(label, color = Ink, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, modifier = Modifier.weight(1f))
+        if (selected) Icon(Icons.Filled.Check, null, tint = Accent)
     }
 }
 
@@ -184,13 +207,13 @@ private fun ShortVideoSettings() {
     Section(tr("tab_video")) {
         SwitchRow(tr("autoplay"), tr("autoplay_sub"), autoplay) { autoplay = it; prefs.autoplay = it }
         SwitchRow(tr("data_saver"), tr("data_saver_sub"), dataSaver) { dataSaver = it; prefs.dataSaver = it }
-        Text(tr("upload_quality"), color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text(tr("upload_quality"), color = Ink, fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("low" to tr("q_low"), "standard" to tr("q_std"), "high" to tr("q_high")).forEach { (k, label) ->
                 PillButton(label, { quality = k; prefs.uploadQuality = k }, filled = quality == k)
             }
         }
-        Text(tr("quality_note"), color = Color.White.copy(.6f), fontSize = 12.sp)
+        Text(tr("quality_note"), color = Ink.copy(.6f), fontSize = 12.sp)
     }
 }
 
@@ -198,12 +221,12 @@ private fun ShortVideoSettings() {
 private fun SwitchRow(title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
-            Text(sub, color = Color.White.copy(.6f), fontSize = 12.sp)
+            Text(title, color = Ink, fontWeight = FontWeight.SemiBold)
+            Text(sub, color = Ink.copy(.6f), fontSize = 12.sp)
         }
         androidx.compose.material3.Switch(
             checked, onChange,
-            colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = Teal, checkedThumbColor = Navy)
+            colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = Accent, checkedThumbColor = OnAccent)
         )
     }
 }
@@ -213,7 +236,7 @@ internal fun Section(title: String, content: @Composable ColumnScope.() -> Unit)
     Spacer(Modifier.height(14.dp))
     GlassPanel(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, color = Teal, fontWeight = FontWeight.Bold)
+            Text(title, color = Accent, fontWeight = FontWeight.Bold)
             content()
         }
     }

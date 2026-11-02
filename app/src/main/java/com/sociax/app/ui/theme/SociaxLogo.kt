@@ -6,12 +6,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -36,24 +34,17 @@ fun SociaxLogo(modifier: Modifier = Modifier, size: Dp = 200.dp, showName: Boole
         )
         if (showName) {
             Spacer(Modifier.height(8.dp))
-            Text("Sociax", color = Color.White, fontSize = (size.value * 0.17f).sp, fontWeight = FontWeight.ExtraBold)
+            Text("Sociax", color = Accent, fontSize = (size.value * 0.17f).sp, fontWeight = FontWeight.ExtraBold)
         }
     }
 }
 
 /**
- * The small header mark of the reference Home screen: the colourful Sociax logo followed by the word "Sociax" in bold white.
+ * The header word of the new Home screen: "Sociax" in bold purple (text only, like the reference).
  */
 @Composable
-fun SociaxMark(modifier: Modifier = Modifier, textSize: Int = 24) {
+fun SociaxMark(modifier: Modifier = Modifier, textSize: Int = 26) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Image(
-            painter = painterResource(R.drawable.sociax_mark),
-            contentDescription = null,
-            modifier = Modifier.size((textSize * 1.05f).dp),
-            contentScale = ContentScale.Fit
-        )
-        Spacer(Modifier.width(6.dp))
-        Text("Sociax", color = Color.White, fontSize = textSize.sp, fontWeight = FontWeight.ExtraBold)
+        Text("Sociax", color = Accent, fontSize = textSize.sp, fontWeight = FontWeight.ExtraBold)
     }
 }

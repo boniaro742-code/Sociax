@@ -57,32 +57,31 @@ import kotlinx.coroutines.launch
 private const val STORY_MS = 5000          // how long one photo stays on screen
 private const val STORY_CAPTION_MAX = 200  // same limit as the server
 
-// ---------------- Row of story rings on Home (like the reference: "Add Story" + people) ----------------
+// ---------------- Row of story rings on Home (new design: "Add Story" + people with a purple ring) ----------------
 @Composable
 fun StoriesRow(groups: List<StoryGroup>, onAdd: () -> Unit, onOpen: (Int) -> Unit) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Column(Modifier.width(68.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                // "Add Story": a clear glass circle with a thin light edge and a thin white + (reference)
-                Box(
-                    Modifier.size(64.dp).clip(CircleShape).background(Color(0x2EFFFFFF))
-                        .border(1.dp, Color(0x80FFFFFF), CircleShape).clickable(onClick = onAdd),
-                    contentAlignment = Alignment.Center
-                ) { Icon(Icons.Filled.Add, tr("a11y_add_story"), tint = Color.White, modifier = Modifier.size(26.dp)) }
+                // "Add Story": a soft purple circle with a purple + and a small purple badge, like "Your Story" in the new design
+                Box(Modifier.size(64.dp).clip(CircleShape).clickable(onClick = onAdd), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxSize().clip(CircleShape).background(SoftAccent).border(1.dp, Hairline, CircleShape))
+                    Icon(Icons.Filled.Add, tr("a11y_add_story"), tint = Accent, modifier = Modifier.size(28.dp))
+                }
                 Spacer(Modifier.height(5.dp))
-                Text(tr("add_story"), color = Color.White.copy(.9f), fontSize = 12.sp, maxLines = 1)
+                Text(tr("add_story"), color = Ink.copy(.85f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         itemsIndexed(groups) { i, g ->
             Column(Modifier.width(68.dp).clickable { onOpen(i) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                // bright ring = something new to watch; faint ring = already seen
-                val ring = if (g.allSeen) SolidColor(Color(0x66FFFFFF))
-                else Brush.sweepGradient(listOf(Color(0xFFE6F0FF), Teal, BlueGlow, Color(0xFFE6F0FF)))
-                Box(Modifier.size(64.dp).border(2.dp, ring, CircleShape).padding(4.dp)) { Avatar(g.avatarUrl, 56) }
+                // purple ring = something new to watch; thin grey ring = already seen
+                val ring = if (g.allSeen) SolidColor(Hairline)
+                else Brush.sweepGradient(listOf(Accent, AccentLight, Color(0xFFEC4899), Accent))
+                Box(Modifier.size(64.dp).border(if (g.allSeen) 1.5.dp else 2.5.dp, ring, CircleShape).padding(4.dp)) { Avatar(g.avatarUrl, 56) }
                 Spacer(Modifier.height(5.dp))
                 Text(
                     if (g.isMe) "Your story" else g.username.removePrefix("@"),
-                    color = Color.White.copy(.9f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                    color = Ink.copy(.85f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -114,7 +113,7 @@ fun CreateStoryScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit) 
         if (textMode) {
             // live preview: the same look as the viewer (middle reference screen)
             GlassPanel(Modifier.fillMaxWidth().height(420.dp), corner = 28) {
-                SociaxBackground(true, Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize().background(StoryBackground)) {
                     TextStoryBody(words.ifBlank { tr("text_story_preview") }, dim = words.isBlank(), modifier = Modifier.fillMaxSize())
                 }
             }
@@ -124,9 +123,9 @@ fun CreateStoryScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit) 
             GlassPanel(Modifier.fillMaxWidth().height(420.dp), corner = 28) {
                 if (uri != null) AsyncImage(uri, tr("a11y_selected_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                    Icon(Icons.Filled.AddPhotoAlternate, null, tint = Teal, modifier = Modifier.size(48.dp))
+                    Icon(Icons.Filled.AddPhotoAlternate, null, tint = Accent, modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(8.dp))
-                    Text(tr("choose_photo"), color = Color.White)
+                    Text(tr("choose_photo"), color = Ink)
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -139,11 +138,11 @@ fun CreateStoryScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit) 
         Spacer(Modifier.height(10.dp))
         Text(
             tr("story_note"),
-            color = Color.White.copy(.7f), fontSize = 12.sp
+            color = Ink.copy(.7f), fontSize = 12.sp
         )
-        error?.let { Text(it, color = Color(0xFFFF8A8A), modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp) }
+        error?.let { Text(it, color = ErrorInk, modifier = Modifier.padding(top = 10.dp), fontSize = 13.sp) }
         Spacer(Modifier.height(20.dp))
-        if (busy) CircularProgressIndicator(color = Teal, modifier = Modifier.align(Alignment.CenterHorizontally))
+        if (busy) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.CenterHorizontally))
         else PillButton(tr("share_story"), {
             if (textMode) {
                 val clean = words.trim()
@@ -289,7 +288,7 @@ fun StoryViewerScreen(api: ApiClient, groups: List<StoryGroup>, startGroup: Int,
             )
         }
     ) {
-        if (story.isText) SociaxBackground(true, Modifier.fillMaxSize()) { }   // text story: the cinematic blue background, no photo
+        if (story.isText) Box(Modifier.fillMaxSize().background(StoryBackground))   // text story: the purple background, no photo
         else AsyncImage(story.imageUrl, story.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         // soft dark blue scrims so the header, the text and the message bar stay readable on any photo
         Box(
@@ -350,20 +349,16 @@ fun StoryViewerScreen(api: ApiClient, groups: List<StoryGroup>, startGroup: Int,
                 ) {
                     InsetPill(Modifier.weight(1f)) {
                         Row(Modifier.padding(start = 6.dp, end = 5.dp, top = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                            TextField(
-                                text, { text = it.take(500) }, Modifier.weight(1f).onFocusChanged { typing = it.isFocused },
-                                placeholder = { Text(tr("send_message"), color = Color.White.copy(.6f), fontSize = 14.sp) },
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                                    focusedTextColor = Color.White, unfocusedTextColor = Color.White
-                                )
+                            ComposerField(
+                                text, { text = it.take(500) }, tr("send_message"),
+                                { if (text.isNotBlank()) reply("Replied to your story: ${text.trim()}") },
+                                Modifier.weight(1f).onFocusChanged { typing = it.isFocused }
                             )
                             Box(
-                                Modifier.size(42.dp).clip(CircleShape).background(PaperWhite)
+                                Modifier.size(42.dp).clip(CircleShape).background(AccentBrush)
                                     .clickable { if (text.isNotBlank()) reply("Replied to your story: ${text.trim()}") },
                                 contentAlignment = Alignment.Center
-                            ) { Icon(Icons.Outlined.Send, tr("a11y_send"), tint = Navy, modifier = Modifier.size(20.dp)) }
+                            ) { Icon(Icons.Outlined.Send, tr("a11y_send"), tint = OnAccent, modifier = Modifier.size(20.dp)) }
                         }
                     }
                     Spacer(Modifier.width(8.dp))
