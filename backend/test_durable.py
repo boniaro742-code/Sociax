@@ -188,7 +188,8 @@ assert ds.get("a") is None
 ds.put("a", b"x")
 assert ds.get("a") == b"x"
 rep = d9.report()
-assert set(rep) == {"enabled", "store", "state", "restored_from", "last_backup_age_s", "last_backup_bytes", "last_error"}
+assert set(rep) == {"enabled", "store", "state", "restored_from", "last_backup_age_s", "last_backup_bytes", "last_error",
+                    "last_backup_seq", "failures_in_row", "last_error_age_s"}
 assert store_from_env({}) is None and store_from_env({"SOCIAX_BACKUP": "off"}) is None
 assert store_from_env({"RENDER": "true"}) is None                                          # no keys: stays off
 cl = store_from_env({"RENDER": "true", "CLOUDINARY_CLOUD_NAME": "c", "CLOUDINARY_API_KEY": "k", "CLOUDINARY_API_SECRET": "s"})
@@ -199,5 +200,91 @@ assert store_from_env({"SOCIAX_BACKUP": "cloudinary"}) is None                  
 assert isinstance(store_from_env({"SOCIAX_BACKUP": "dir:" + tmp()}), DirStore)
 off = Durable("x.db", None)
 assert off.state == "off" and off.serving and off.startup() == "off" and off.backup_now() is False
+
+# ---- 12. R8 (report v0.67.0): every backup is logged (success AND failure), the version number and failures are visible,
+#          nothing secret is written, and a restore test works on a SEPARATE file ----
+import logging
+from durable import inspect_store, restore_drill, table_counts
+
+
+class ListHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+handler = ListHandler()
+logging.getLogger("sociax.durable").addHandler(handler)
+logging.getLogger("sociax.durable").setLevel(logging.INFO)
+SECRET = "SENTINEL-secret-value-8f3a91c2"
+
+st12 = FakeStore()
+dbp12 = os.path.join(tmp(), "r8.db")
+make_db(dbp12, ("u1", "u2"))
+d12 = Durable(dbp12, st12)
+d12.startup(attempts=1)
+assert d12.report()["failures_in_row"] == 0 and d12.report()["last_backup_seq"] == 0 and d12.report()["last_error_age_s"] is None
+assert d12.backup_now() is True
+assert any("BACKUP OK seq=1 slot=a" in line for line in handler.lines), handler.lines          # success is logged (version, slot, size)
+assert d12.report()["last_backup_seq"] == 1 and d12.report()["failures_in_row"] == 0
+
+make_db(dbp12, ("u1", "u2", "u3"))
+st12.down = True
+assert d12.backup_now() is False and d12.backup_now(force=True) is False
+rep12 = d12.report()
+assert rep12["failures_in_row"] == 2 and rep12["last_backup_seq"] == 1 and rep12["last_error_age_s"] is not None, rep12   # failures are counted and dated
+assert sum("BACKUP FAILED" in line for line in handler.lines) == 2
+st12.down = False
+assert d12.backup_now() is True
+rep12 = d12.report()
+assert rep12["failures_in_row"] == 0 and rep12["last_error"] == "" and rep12["last_error_age_s"] is None and rep12["last_backup_seq"] == 2
+assert any("backups work again after 2" in line for line in handler.lines)
+
+# the store is told a secret: whatever it raises, the log and the report show the exception NAME only, never its text
+class LeakyStore(FakeStore):
+    def put(self, slot, data):
+        raise StoreUnavailable("https://api.example/?api_secret=" + SECRET)
+leaky = LeakyStore()
+dbp13 = os.path.join(tmp(), "leaky.db")
+make_db(dbp13, ("u1",))
+d13 = Durable(dbp13, leaky)
+d13.startup(attempts=1)
+assert d13.backup_now() is False
+assert SECRET not in " ".join(handler.lines) and SECRET not in json.dumps(d13.report()), "a secret leaked into a log line or the report"
+
+# inspect_store: both slots, seq numbers, validity (no restore, nothing written)
+before12 = dict(st12.slots)
+info = {row["slot"]: row for row in inspect_store(st12)}
+assert info["a"]["valid"] and info["b"]["valid"] and {info["a"]["seq"], info["b"]["seq"]} == {1, 2}      # retention = two newest versions
+assert st12.slots == before12
+st12.slots["a"] = b"garbage"
+assert {row["slot"]: row for row in inspect_store(st12)}["a"]["valid"] is False
+
+# restore_drill: newest good copy goes to a DIFFERENT file; same tables and row counts as the live database
+st12.slots["a"] = before12["a"]
+drill_path = os.path.join(tmp(), "drill.db")
+res = restore_drill(st12, drill_path)
+assert res["seq"] == 2 and res["slot"] == "b" and res["tables"] == table_counts(dbp12) == {"users": 3}, res
+assert names(drill_path) == ["u1", "u2", "u3"] and os.path.abspath(drill_path) != os.path.abspath(dbp12)
+for bad_call in (lambda: restore_drill(st12, drill_path),                      # refuses to overwrite an existing file
+                 lambda: restore_drill(FakeStore(), os.path.join(tmp(), "e.db"))):    # nothing saved: not "empty", an error
+    try:
+        bad_call()
+        raise AssertionError("restore_drill accepted a bad request")
+    except ValueError:
+        pass
+st12.slots["b"] = b"garbage"                                                    # newest damaged: the drill uses the older good copy
+res2 = restore_drill(st12, os.path.join(tmp(), "drill2.db"))
+assert res2["seq"] == 1 and res2["tables"] == {"users": 2}, res2
+st12.down = True
+try:
+    restore_drill(st12, os.path.join(tmp(), "drill3.db"))
+    raise AssertionError("an unreachable store must not look like an empty one")
+except StoreUnavailable:
+    pass
+logging.getLogger("sociax.durable").removeHandler(handler)
 
 print("test_durable: all checks passed")

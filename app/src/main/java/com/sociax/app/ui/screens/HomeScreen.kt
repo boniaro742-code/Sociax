@@ -280,7 +280,7 @@ fun PostCard(p: Post, ctl: PostController, onComments: (Post) -> Unit) {
     var captionCut by remember(p.id) { mutableStateOf(false) }
     val openProfile = LocalOpenProfile.current
 
-    GlassPanel(Modifier.fillMaxWidth(), corner = 22) {
+    GlassPanel(Modifier.fillMaxWidth(), corner = 22, lift = true) {
         Column(Modifier.padding(12.dp)) {
             // author line: avatar, name, "2h ago" with a globe (public) or a people icon (followers only), Follow chip, menu
             Row(verticalAlignment = Alignment.CenterVertically) {

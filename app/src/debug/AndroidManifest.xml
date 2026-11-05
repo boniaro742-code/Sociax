@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG builds only (never in release): lets the app talk plain http to the emulator / your own computer while you develop.
+     The release APK has no cleartext permission at all: it can only use https. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config" />
+</manifest>

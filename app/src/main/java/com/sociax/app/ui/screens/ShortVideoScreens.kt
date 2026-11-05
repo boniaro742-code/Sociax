@@ -392,7 +392,7 @@ private fun ShortPage(
         }
 
         // dark scrim so text stays readable on any video
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.6f to Color.Transparent, 1f to Color(0xCC0B1220))))
+        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.6f to Color.Transparent, 1f to Color(0xCC000000))))
 
         // right action rail (new design): the author's photo with a purple "+" (follow), heart, comments, save, share, more
         Column(

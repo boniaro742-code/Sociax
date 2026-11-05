@@ -126,17 +126,22 @@ with closing(m.db()) as con:
     assert con.execute("SELECT duration FROM shorts WHERE id=?", (sid,)).fetchone()[0] == 7      # a known length is never overwritten
 del FAKE[pid]
 assert m._backfill_duration_once(sid, pid) is False                              # Cloudinary error: just "try later", no exception
-m.DURATION_BACKFILL_DELAYS = (0,)
+# R3 (v0.67.0 report): the old check used ONE background try (delay 0) and set the length only AFTER the thread had started, so the
+# thread could ask first, find nothing, and stop for good (a test that passed sometimes and failed sometimes). Now the job keeps
+# trying every 50 ms (bounded: about 5 s), the length appears after publishing, and the test waits for the result with a deadline.
+m.DURATION_BACKFILL_DELAYS = (0.05,) * 100
 pid2 = upload(A, 12, None)
 s = m.create_short(m.NewShort(public_id=pid2), A)
-for _ in range(100):                                                             # the background thread asks again
+assert s["duration"] is None                                                     # unknown at publish time
+FAKE[pid2]["duration"] = 21.0                                                    # Cloudinary learns the length afterwards
+got, deadline = None, time.time() + 10
+while time.time() < deadline:                                                    # wait for the job's result (bounded), no fixed sleep
     with closing(m.db()) as con:
-        if con.execute("SELECT duration FROM shorts WHERE id=?", (s["id"],)).fetchone()[0] is not None:
-            break
-    FAKE[pid2]["duration"] = 21.0
+        got = con.execute("SELECT duration FROM shorts WHERE id=?", (s["id"],)).fetchone()[0]
+    if got is not None:
+        break
     time.sleep(0.05)
-with closing(m.db()) as con:
-    assert con.execute("SELECT duration FROM shorts WHERE id=?", (s["id"],)).fetchone()[0] == 21.0
+assert got == 21.0, "the background job did not fill in the length in time: %r" % (got,)
 m.DURATION_BACKFILL_DELAYS = ()
 ok("late length: filled in once from Cloudinary, never overwrites a known length, errors only mean 'try later'")
 

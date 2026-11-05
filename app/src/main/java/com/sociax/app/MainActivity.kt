@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -612,11 +613,17 @@ fun BottomBar(current: Tab, chatDot: Boolean, modifier: Modifier = Modifier, onS
                         .clickable(role = Role.Tab) { onSelect(t) },
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
                 ) {
-                    Box {
-                        Icon(if (active) t.activeIcon else t.icon, null, tint = tint, modifier = Modifier.size(25.dp))
-                        if (t == Tab.Chat && chatDot) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-1).dp).size(9.dp).clip(CircleShape).background(Accent))
+                    // plan v3.10.2 (appearance only): the selected tab gets a soft lavender pill behind its filled purple icon
+                    Box(
+                        Modifier.width(52.dp).height(30.dp).clip(RoundedCornerShape(15.dp)).background(if (active) LavenderFill else Color.Transparent),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box {
+                            Icon(if (active) t.activeIcon else t.icon, null, tint = tint, modifier = Modifier.size(25.dp))
+                            if (t == Tab.Chat && chatDot) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-1).dp).size(9.dp).clip(CircleShape).background(Accent))
+                        }
                     }
-                    Spacer(Modifier.height(3.dp))
+                    Spacer(Modifier.height(2.dp))
                     Text(name, color = tint, fontSize = 11.sp, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal, maxLines = 1)
                 }
             }

@@ -192,6 +192,64 @@ def _check_sqlite(raw: bytes) -> None:
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+# R8 (report v0.67.0): proof tools. They only READ the store and never touch the live database.
+# ----------------------------------------------------------------------------------------------------------------------
+def inspect_store(store) -> list:
+    """What the two slots hold, without restoring anything: [{slot, exists, valid, seq, saved_at, bytes, problem}].
+    `problem` is an error NAME only (never an address or key). StoreUnavailable propagates: the answer would be unknown."""
+    out = []
+    for slot in SLOTS:
+        blob = store.get(slot)
+        if blob is None:
+            out.append({"slot": slot, "exists": False, "valid": False, "seq": None, "saved_at": None, "bytes": 0, "problem": ""})
+            continue
+        row = {"slot": slot, "exists": True, "valid": False, "seq": None, "saved_at": None, "bytes": len(blob), "problem": ""}
+        try:
+            head, raw = parse_snapshot(blob)
+            row["seq"], row["saved_at"] = int(head.get("seq", 0)), int(head["saved_at"])
+            _check_sqlite(raw)
+            row["valid"] = True
+        except Exception as e:
+            row["problem"] = e.__class__.__name__
+        out.append(row)
+    return out
+
+
+def table_counts(db_path: str) -> dict:
+    """{table name: number of rows} of a SQLite file (numbers only, no content)."""
+    with closing(sqlite3.connect(db_path)) as con:
+        names = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        return {n: con.execute('SELECT COUNT(*) FROM "%s"' % n.replace('"', '""')).fetchone()[0] for n in names}
+
+
+def restore_drill(store, out_path: str) -> dict:
+    """RESTORE TEST: take the newest GOOD snapshot from the store and write it to `out_path`, a file that is NOT the live
+    database (it refuses a path that already exists). Returns {slot, seq, saved_at, age_s, bytes, tables{name: rows}}.
+    Raises ValueError when nothing usable exists, StoreUnavailable when the store cannot be reached."""
+    if os.path.exists(out_path):
+        raise ValueError("refusing to overwrite an existing file")
+    found = []
+    for slot in SLOTS:
+        blob = store.get(slot)
+        if blob is None:
+            continue
+        try:
+            head, raw = parse_snapshot(blob)
+            _check_sqlite(raw)
+            found.append((slot, head, raw))
+        except Exception:
+            continue
+    if not found:
+        raise ValueError("no usable snapshot in the store")
+    found.sort(key=lambda t: (t[1].get("seq", 0), t[1]["saved_at"]), reverse=True)
+    slot, head, raw = found[0]
+    with open(out_path, "wb") as f:
+        f.write(raw)
+    return {"slot": slot, "seq": int(head.get("seq", 0)), "saved_at": int(head["saved_at"]),
+            "age_s": max(0, int(time.time()) - int(head["saved_at"])), "bytes": len(raw), "tables": table_counts(out_path)}
+
+
+# ----------------------------------------------------------------------------------------------------------------------
 # The manager: state machine + restore + background backup
 # ----------------------------------------------------------------------------------------------------------------------
 class Durable:
@@ -207,6 +265,8 @@ class Durable:
         self.last_backup_at = 0
         self.last_backup_bytes = 0
         self.last_error = ""
+        self.last_error_at = 0                     # R8: when the last error happened (time only, no text)
+        self.failures_in_row = 0                   # R8: failed backups since the last good one (0 = healthy)
         self.restored_from = ""                    # "", "snapshot", "local file", "nothing saved yet"
         self.restored_saved_at = 0
         self._sig = None                           # (mtime, size) of the database at the last successful backup
@@ -227,9 +287,13 @@ class Durable:
         return self.state in ("off", "ready")
 
     def report(self) -> dict:
+        now = int(time.time())
         return {"enabled": self.enabled, "store": self.store.describe() if self.store else None, "state": self.state,
-                "restored_from": self.restored_from, "last_backup_age_s": (int(time.time()) - self.last_backup_at) if self.last_backup_at else None,
-                "last_backup_bytes": self.last_backup_bytes, "last_error": self.last_error}
+                "restored_from": self.restored_from, "last_backup_age_s": (now - self.last_backup_at) if self.last_backup_at else None,
+                "last_backup_bytes": self.last_backup_bytes, "last_error": self.last_error,
+                # R8 (report v0.67.0): the version number of the newest copy, how many backups failed in a row, and when the last error was
+                "last_backup_seq": self.seq, "failures_in_row": self.failures_in_row,
+                "last_error_age_s": (now - self.last_error_at) if (self.last_error and self.last_error_at) else None}
 
     # ---- restore ----
     def _read_slots(self):
@@ -330,21 +394,31 @@ class Durable:
                 return False
             if not os.path.isfile(self.db_path):
                 return False
+            started = time.time()
             try:
                 blob = make_snapshot(self.db_path, seq=self.seq + 1)
                 slot = SLOTS[1] if self.newest_slot == SLOTS[0] else SLOTS[0]     # write the slot that is NOT the newest
                 self.store.put(slot, blob)
             except StoreRejected as e:
-                self.last_error = "storage refused the backup (file too large?): " + str(e)[:60]
-                log.error("durable: %s", self.last_error)
+                self._failed("storage refused the backup (file too large?): " + str(e)[:60])
+                log.error("durable: BACKUP FAILED (#%d in a row): %s", self.failures_in_row, self.last_error)
                 return False
             except (StoreUnavailable, sqlite3.Error, OSError) as e:
-                self.last_error = "backup failed: " + e.__class__.__name__
-                log.warning("durable: %s (will retry)", self.last_error)
+                self._failed("backup failed: " + e.__class__.__name__)
+                log.warning("durable: BACKUP FAILED (#%d in a row): %s (will retry)", self.failures_in_row, self.last_error)
                 return False
             self.newest_slot, self._sig, self.seq = slot, sig, self.seq + 1
             self.last_backup_at, self.last_backup_bytes, self.last_error = int(time.time()), len(blob), ""
+            if self.failures_in_row:
+                log.info("durable: backups work again after %d failed attempt(s)", self.failures_in_row)
+            self.failures_in_row, self.last_error_at = 0, 0
+            # R8: one line per good backup: version (seq), slot, size, time taken. Numbers only: never an address, key or file content.
+            log.info("durable: BACKUP OK seq=%d slot=%s bytes=%d took=%.1fs", self.seq, slot, len(blob), time.time() - started)
             return True
+
+    def _failed(self, text: str) -> None:
+        self.last_error, self.last_error_at = text, int(time.time())
+        self.failures_in_row += 1
 
     def _loop(self):
         while not self._stop.is_set():

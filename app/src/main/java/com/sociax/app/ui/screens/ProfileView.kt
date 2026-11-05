@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material3.Icon
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -48,6 +51,40 @@ fun PostsGrid(posts: List<Post>, onOpen: (Post) -> Unit) {
     }
 }
 
+/**
+ * Plan v3.10.2 (Bio/Profile, appearance only): a CENTERED "Profile" heading with the back control on the left and the existing overflow
+ * control on the right. Both side slots are 44 dp wide so the title stays exactly in the middle, with or without a control.
+ */
+@Composable
+internal fun ProfileHeading(title: String, onBack: (() -> Unit)?, trailing: @Composable () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.CenterStart) {
+            if (onBack != null) GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack, size = 44)
+        }
+        Text(title, color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.CenterEnd) { trailing() }
+    }
+}
+
+/**
+ * The tab row above the media grid. The app has ONE kind of profile media (photo posts), so the row honestly shows only "Posts" (selected,
+ * purple, with the underline); "Videos" and "Tagged" are not shown because nothing in the app or on the server backs them.
+ */
+@Composable
+internal fun ProfilePostsTab() {
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.GridView, null, tint = Accent, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(tr("posts"), color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline)) {
+            Box(Modifier.fillMaxWidth(0.3f).height(2.dp).align(Alignment.CenterStart).background(Accent))
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+}
+
 @Composable
 fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOpenPost: (Post) -> Unit, onChat: (ChatSummary) -> Unit,
                       onOpenList: (username: String, kind: String) -> Unit = { _, _ -> }) {
@@ -77,7 +114,17 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
 
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        TopBar(username, onBack)
+        ProfileHeading(tr("tab_bio"), onBack) {
+            // the existing overflow menu (Block), moved from the button row to the heading; same menu, same action
+            val pm = profile
+            if (pm != null && !pm.isMe && !pm.iBlocked) Box {
+                GlassIconButton(Icons.Filled.MoreVert, tr("a11y_more"), { menu = true }, size = 44)
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(text = { Text(tr("block_user") + " " + pm.username) },
+                        onClick = { menu = false; act { api.setBlock(pm.username, true) } })
+                }
+            }
+        }
         error?.let { Text(it, color = ErrorInk, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
         if (loading) CircularProgressIndicator(color = Accent)
         val p = profile
@@ -89,7 +136,7 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
             if (p.followsMe && !p.isMe) Text(tr("follows_you"), color = Ink.copy(.6f), fontSize = 12.sp)
             if (p.bio.isNotBlank()) { Spacer(Modifier.height(6.dp)); Text(p.bio, color = Ink.copy(.8f), textAlign = TextAlign.Center) }
             Spacer(Modifier.height(14.dp))
-            GlassPanel(Modifier.fillMaxWidth()) {
+            GlassPanel(Modifier.fillMaxWidth(), fill = LavenderFill) {
                 Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                     ProfileStat(p.posts?.toString() ?: "-", tr("posts"))
                     // the lists open only when the server will show them (not blocked, not a private account I do not follow)
@@ -114,13 +161,6 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
                                 catch (e: CancellationException) { throw e } catch (e: Exception) { error = errText(e) }
                             }
                         }, filled = false)
-                        Box {
-                            GlassIconButton(Icons.Filled.MoreVert, tr("a11y_more"), { menu = true })
-                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                DropdownMenuItem(text = { Text(tr("block_user") + " " + p.username) },
-                                    onClick = { menu = false; act { api.setBlock(p.username, true) } })
-                            }
-                        }
                     }
                 }
                 Spacer(Modifier.height(14.dp))
@@ -129,7 +169,7 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
                 p.iBlocked -> Text(tr("you_blocked"), color = Ink.copy(.7f), textAlign = TextAlign.Center)
                 !p.canViewPosts -> Text(tr("private_account_note"), color = Ink.copy(.7f), textAlign = TextAlign.Center)
                 posts.isEmpty() -> Text(tr("no_posts_yet"), color = Ink.copy(.7f))
-                else -> PostsGrid(posts, onOpenPost)
+                else -> { ProfilePostsTab(); PostsGrid(posts, onOpenPost) }
             }
         }
         Spacer(Modifier.height(24.dp))

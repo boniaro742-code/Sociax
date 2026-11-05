@@ -26,7 +26,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -191,7 +190,7 @@ private fun AiHeroCard(onCaption: () -> Unit, onIdeas: () -> Unit, onSummarize: 
     val shape = RoundedCornerShape(24.dp)
     Box(
         Modifier.fillMaxWidth().clip(shape)
-            .background(Brush.linearGradient(listOf(SoftAccent, CardFill)))
+            .background(LavenderFill)      // plan v3.10.2: a soft lavender welcome card
             .border(1.dp, Hairline, shape)
     ) {
         AiOrb(136.dp, Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 2.dp))

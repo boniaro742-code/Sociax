@@ -23,7 +23,6 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Sociax">
         <!-- Step 41: AdMob App ID (Google's TEST id unless the build sets SOCIAX_ADMOB_APP_ID). Required: without it the Ads SDK crashes. -->
         <meta-data

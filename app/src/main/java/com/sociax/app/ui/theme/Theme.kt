@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 // =================================================================================================================
-// Sociax design system v2 (Step 59): clean, light-first, purple accent, white cards with a thin edge, round avatars.
+// Sociax design system v2 (Step 59), colours aligned to plan v3.10.2 in Step 66 (purple #5838D8, lavender #F5F3FC): clean, light-first, purple accent, white cards with a thin edge, round avatars.
 // EVERY screen reads its colours from the tokens below, so one switch (applyPalette) turns the whole app light or dark.
 // The tokens are state values: a screen that reads one redraws by itself when the person changes the theme or the accent.
 // =================================================================================================================
@@ -36,11 +36,17 @@ import androidx.compose.ui.unit.dp
 val Navy = Color(0xFF0B1220)
 val Surface = Color(0xFF121C2E)
 
+/** Plan v3.10.2 section 1: the primary accent, purple #5838D8. */
+const val SociaxPurple: Long = 0xFF5838D8
+
+/** Before Step 66 the default purple was #6C4DF0. A phone that still holds it moves to the exact plan colour (other choices are kept). */
+const val OldSociaxPurple: Long = 0xFF6C4DF0
+
 /** Accent colour (Settings > Appearance). The first choice is the Sociax purple of the new design. */
-var Accent by mutableStateOf(Color(0xFF6C4DF0))
+var Accent by mutableStateOf(Color(SociaxPurple))
 
 /** The accent colours offered in Settings. The first one is the Sociax purple. */
-val AccentChoices: List<Long> = listOf(0xFF6C4DF0, 0xFF2F80ED, 0xFF12B886, 0xFFEC4899, 0xFFF59E0B)
+val AccentChoices: List<Long> = listOf(SociaxPurple, 0xFF2F80ED, 0xFF12B886, 0xFFEC4899, 0xFFF59E0B)
 
 /** Text / icons that sit ON the accent colour (filled buttons, unread badges, the send button). */
 val OnAccent = Color.White
@@ -58,6 +64,9 @@ val OnlineGreen = Color(0xFF22C55E)
 // ---- Light / dark palette ------------------------------------------------------------------------------------
 private var darkPalette by mutableStateOf(false)
 
+/** True while the dark palette is applied (read by components that differ between light and dark, e.g. the soft card shadow). */
+fun isDarkPalette(): Boolean = darkPalette
+
 /** Main text and icon colour. Greys are made with Ink.copy(alpha): .7 for secondary text, .5 for hints. */
 var Ink by mutableStateOf(Color(0xFF15142B))
 /** The page behind everything. */
@@ -65,9 +74,12 @@ var PageBg by mutableStateOf(Color.White)
 /** White cards, the bottom bar, dialogs. */
 var CardFill by mutableStateOf(Color.White)
 /** Search boxes, text fields, round icon buttons, message bubbles of other people. */
-var FieldFill by mutableStateOf(Color(0xFFF3F2FA))
+var FieldFill by mutableStateOf(Color(0xFFF5F3FC))
 /** The thin edge of cards, fields and dividers. */
-var Hairline by mutableStateOf(Color(0xFFE8E6F2))
+var Hairline by mutableStateOf(Color(0xFFE6E2F5))
+
+/** Soft lavender panel (plan v3.10.2: "soft lavender-tinted panels" such as #F5F3FC): the AI welcome card, the profile stats, the selected tab pill. */
+val LavenderFill: Color get() = if (darkPalette) Accent.copy(alpha = 0.16f) else Color(0xFFF5F3FC)
 
 /** Pale tint of the accent (selected chip, my message bubble in AI chat, "Follow" chip). */
 val SoftAccent: Color get() = Accent.copy(alpha = if (darkPalette) 0.24f else 0.10f)
@@ -80,11 +92,11 @@ val NoticeInk: Color get() = if (darkPalette) Color(0xFFFFE08A) else Color(0xFFB
 fun applyPalette(dark: Boolean) {
     darkPalette = dark
     if (dark) {
-        Ink = Color(0xFFF3F2FB); PageBg = Color(0xFF0F0E1A); CardFill = Color(0xFF191828)
-        FieldFill = Color(0xFF232137); Hairline = Color(0xFF2F2D47)
+        Ink = Color(0xFFF3F2FB); PageBg = Color(0xFF0F0E1A); CardFill = Color(0xFF1A1830)
+        FieldFill = Color(0xFF242240); Hairline = Color(0xFF312E50)
     } else {
         Ink = Color(0xFF15142B); PageBg = Color.White; CardFill = Color.White
-        FieldFill = Color(0xFFF3F2FA); Hairline = Color(0xFFE8E6F2)
+        FieldFill = Color(0xFFF5F3FC); Hairline = Color(0xFFE6E2F5)
     }
 }
 

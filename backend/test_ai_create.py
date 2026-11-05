@@ -131,4 +131,72 @@ assert ac.get_draft(con, "u5", e1["id"])["status"] == "expired" and ac.get_draft
 # the prompt is never stored
 cols = [r[1] for r in con.execute("PRAGMA table_info(ai_gen_drafts)")]
 assert "prompt" not in cols and not any("prompt" in c for c in cols)
+
+# Step 65: Gemini image provider (no network: a fake HTTP client)
+import base64  # noqa: E402
+
+
+class FakeResp:
+    def __init__(self, payload, status=200):
+        self.payload, self.status_code = payload, status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            err = Exception("boom")
+            err.response = self
+            raise err
+
+    def json(self):
+        return self.payload
+
+
+class FakeClient:
+    def __init__(self, resp):
+        self.resp, self.sent = resp, []
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.sent.append((url, headers, json))
+        return self.resp
+
+
+assert ac.provider_from_env({"GEN_PROVIDER": "gemini"}) is None                          # no key -> not available
+g = ac.provider_from_env({"GEN_PROVIDER": "gemini", "GEMINI_API_KEY": "k123", "GEN_IMAGE_MODEL": "m-x"})
+assert isinstance(g, ac.GeminiImageProvider) and g.kinds() == {"image"} and g.model == "m-x"
+png = ac.FakeProvider.PNG
+ok = FakeResp({"candidates": [{"content": {"parts": [{"text": "here"}, {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(png).decode()}}]}}]})
+cl = FakeClient(ok)
+g.client = cl
+res = g.generate("image", "a red fox")
+assert res.data == png and res.mime == "image/png"
+assert cl.sent[0][1] == {"x-goog-api-key": "k123"} and "m-x:generateContent" in cl.sent[0][0] and "k123" not in cl.sent[0][0]
+for bad in (FakeResp({"candidates": []}), FakeResp({"promptFeedback": {"blockReason": "SAFETY"}}),
+            FakeResp({"candidates": [{"content": {"parts": [{"text": "no picture"}]}}]}), FakeResp({}, status=429), FakeResp({}, status=500)):
+    g.client = FakeClient(bad)
+    try:
+        g.generate("image", "x")
+        raise AssertionError("a failed answer was accepted")
+    except ac.ProviderFailed:
+        pass
+try:
+    g.generate("video", "x")
+    raise AssertionError("gemini must not claim video")
+except ac.ProviderFailed:
+    pass
+# through generate(): a failed Gemini call gives the slot back; videos stay "not available"
+g.client = FakeClient(FakeResp({"candidates": []}))
+try:
+    ac.generate(con, "u9", "image", "fox", g, store, now=T0)
+    raise AssertionError("failed generation must raise")
+except ac.ProviderFailed:
+    pass
+assert ac.quota_state(con, "u9", T0)["image"]["used"] == 0
+try:
+    ac.generate(con, "u9", "video", "waves", g, store, now=T0)
+    raise AssertionError("video must be unavailable with gemini")
+except ac.Unavailable:
+    pass
+g.client = cl
+d9 = ac.generate(con, "u9", "image", "fox", g, store, now=T0)
+assert d9["status"] == "draft" and ac.quota_state(con, "u9", T0)["image"]["used"] == 1
+
 print("test_ai_create: all checks passed")

@@ -65,7 +65,7 @@ private fun buildAdView(ctx: android.content.Context): View {
     val badge = TextView(ctx).apply {
         setTextColor(AColor.WHITE); textSize = 12f; typeface = Typeface.DEFAULT_BOLD
         setPadding(px(8), px(2), px(8), px(2)); background = pill(AColor.parseColor("#E0B14A"), 6)
-        setTextColor(AColor.parseColor("#0B1220"))
+        setTextColor(AColor.parseColor("#1A1530"))
     }
     val advertiser = TextView(ctx).apply {
         setTextColor(AColor.parseColor("#B8C4D9")); textSize = 13f; maxLines = 1
@@ -82,7 +82,7 @@ private fun buildAdView(ctx: android.content.Context): View {
 
     // icon + headline + body
     val textRow = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-    val icon = ImageView(ctx).apply { scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; background = pill(AColor.parseColor("#121C2E"), 10) }
+    val icon = ImageView(ctx).apply { scaleType = ImageView.ScaleType.CENTER_CROP; clipToOutline = true; background = pill(AColor.parseColor("#2A2150"), 10) }
     textRow.addView(icon, LinearLayout.LayoutParams(px(44), px(44)).apply { marginEnd = px(10) })
     val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
     val headline = TextView(ctx).apply { setTextColor(AColor.WHITE); textSize = 17f; typeface = Typeface.DEFAULT_BOLD; maxLines = 2 }
@@ -93,8 +93,8 @@ private fun buildAdView(ctx: android.content.Context): View {
 
     // call to action (comes from the ad; the person may ignore it, nothing forces a click)
     val cta = TextView(ctx).apply {
-        setTextColor(AColor.parseColor("#0B1220")); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
-        gravity = Gravity.CENTER; background = pill(AColor.parseColor("#2FE0B2"), 24)
+        setTextColor(AColor.WHITE); textSize = 15f; typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER; background = pill(AColor.parseColor("#5838D8"), 24)
         setPadding(px(16), px(12), px(16), px(12))
     }
     column.addView(cta, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = px(12) })

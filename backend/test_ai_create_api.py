@@ -1,6 +1,7 @@
 """Step 55: the AI Create routes in main.py (Pro only, not available until a provider is chosen, Yes = use once, No = discard).
 Calls the route functions directly (no web server) with Cloudinary replaced by a stub.  Run: DEV_AUTH=1 python test_ai_create_api.py"""
 import os
+import re
 import tempfile
 
 os.environ["DEV_AUTH"] = "1"
@@ -11,7 +12,7 @@ from fastapi import HTTPException  # noqa: E402
 import main as m  # noqa: E402
 import ai_create  # noqa: E402
 
-assert m.API_VERSION == "0.64.0"
+assert re.fullmatch(r"\d+\.\d+\.\d+", m.API_VERSION), m.API_VERSION   # not pinned to one release
 UID = "dev-user-1"
 stored = []
 

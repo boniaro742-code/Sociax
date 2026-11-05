@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -36,10 +37,14 @@ fun GlassPanel(
     corner: Int = 20,
     fill: Color = GlassFill,
     borderColor: Color = GlassBorder,
+    lift: Boolean = false,
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(
         modifier = modifier
+            // plan v3.10.2: "subtle borders/shadows". A very soft lift for the big cards (posts, welcome card) in the light theme only;
+            // small controls and long lists stay flat so a low-end phone does not pay for hundreds of shadows.
+            .then(if (lift && !isDarkPalette()) Modifier.shadow(3.dp, RoundedCornerShape(corner.dp), ambientColor = Color(0x1A5838D8), spotColor = Color(0x1A5838D8)) else Modifier)
             .clip(RoundedCornerShape(corner.dp))
             .background(fill)
             .border(BorderStroke(1.dp, borderColor), RoundedCornerShape(corner.dp)),
@@ -211,12 +216,12 @@ fun AiOrb(size: Dp, modifier: Modifier = Modifier, glow: Boolean = true) {
         val r = this.size.minDimension / 2f
         val body = if (glow) r * 0.66f else r * 0.96f
         if (glow) {
-            drawCircle(Brush.radialGradient(listOf(Color(0x556C4DF0), Color.Transparent), center = c, radius = r), radius = r, center = c)
-            drawCircle(color = Color(0x226C4DF0), radius = r * 0.82f, center = c)
+            drawCircle(Brush.radialGradient(listOf(Color(0x555838D8), Color.Transparent), center = c, radius = r), radius = r, center = c)
+            drawCircle(color = Color(0x225838D8), radius = r * 0.82f, center = c)
         }
         drawCircle(
             Brush.radialGradient(
-                listOf(Color(0xFF9B8CFF), Color(0xFF6C4DF0), Color(0xFF3B2BC4)),
+                listOf(Color(0xFF9B8CFF), Color(0xFF5838D8), Color(0xFF3B2BC4)),
                 center = Offset(c.x - body * 0.25f, c.y - body * 0.3f), radius = body * 1.6f
             ),
             radius = body, center = c

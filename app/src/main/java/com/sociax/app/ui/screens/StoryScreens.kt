@@ -76,7 +76,7 @@ fun StoriesRow(groups: List<StoryGroup>, onAdd: () -> Unit, onOpen: (Int) -> Uni
             Column(Modifier.width(68.dp).clickable { onOpen(i) }, horizontalAlignment = Alignment.CenterHorizontally) {
                 // purple ring = something new to watch; thin grey ring = already seen
                 val ring = if (g.allSeen) SolidColor(Hairline)
-                else Brush.sweepGradient(listOf(Accent, AccentLight, Color(0xFFEC4899), Accent))
+                else Brush.sweepGradient(listOf(Accent, AccentLight, Accent, AccentDeep, Accent))
                 Box(Modifier.size(64.dp).border(if (g.allSeen) 1.5.dp else 2.5.dp, ring, CircleShape).padding(4.dp)) { Avatar(g.avatarUrl, 56) }
                 Spacer(Modifier.height(5.dp))
                 Text(
@@ -290,10 +290,10 @@ fun StoryViewerScreen(api: ApiClient, groups: List<StoryGroup>, startGroup: Int,
     ) {
         if (story.isText) Box(Modifier.fillMaxSize().background(StoryBackground))   // text story: the purple background, no photo
         else AsyncImage(story.imageUrl, story.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        // soft dark blue scrims so the header, the text and the message bar stay readable on any photo
+        // soft neutral dark scrims so the header, the text and the message bar stay readable on any photo
         Box(
             Modifier.fillMaxSize().background(
-                Brush.verticalGradient(0f to Color(0x990B1220), 0.25f to Color.Transparent, 0.55f to Color.Transparent, 1f to Color(0xCC0B1220))
+                Brush.verticalGradient(0f to Color(0x99000000), 0.25f to Color.Transparent, 0.55f to Color.Transparent, 1f to Color(0xCC000000))
             )
         )
 

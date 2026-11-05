@@ -131,8 +131,14 @@ def test_all():
     m.block_user("ben", A)                                               # blocked users' comments disappear
     assert code(m.add_short_comment, pub, m.NewComment(text="y"), B) == 404
     m.unblock_user("ben", A)
-    off = publish(A, 13, 5.0, comments_enabled=False)["id"]
+    # R2 (v0.67.0 report): upload number 13 was already used above, and a repeated upload id returns the OLD clip (the retry rule),
+    # so the "comments off" clip was never created. A number that nothing else uses (130) makes this check real.
+    off = publish(A, 130, 5.0, comments_enabled=False, size=1024)["id"]   # tiny size: keeps the 150 MB daily allowance check below untouched
+    with m.closing(m.db()) as _con:
+        _before = _con.execute("SELECT COUNT(*) FROM short_comments WHERE short_id=?", (off,)).fetchone()[0]
     assert code(m.add_short_comment, off, m.NewComment(text="x"), B) == 403
+    with m.closing(m.db()) as _con:         # the refusal must also leave NO comment row behind
+        assert _con.execute("SELECT COUNT(*) FROM short_comments WHERE short_id=?", (off,)).fetchone()[0] == _before == 0
     assert m.list_short_comments(off, B) == {"comments": [], "comments_enabled": False}
     assert m.report_short(pub, m.Report(reason="spam"), B)["ok"]
     # no private media URL leaks: every URL is built from the visible row only

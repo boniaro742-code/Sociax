@@ -11,9 +11,13 @@ RULES IT ENFORCES ON THE SERVER (never trusts numbers from the app):
     and the file is queued for deletion. Drafts live under the person's own folder; a draft of someone else can never be used.
   * The prompt is NEVER stored or logged (only the draft's kind, size and time).
 
-WHAT IS NOT HERE (honest): no AI provider is chosen yet. `provider_from_env` returns None until the owner picks one, and then the
-server answers 503 `generation_unavailable` ("not available yet") instead of pretending. A real content-safety check of prompts and
-results is the provider's job plus a later step; this module does not claim to moderate.
+PROVIDERS (Step 65, report v0.64.0): GEN_PROVIDER=gemini turns on IMAGE generation with Google Gemini (uses the GEMINI_API_KEY the server
+already has; model from GEN_IMAGE_MODEL, default gemini-2.5-flash-image). Video generation is still NOT available: no video provider is
+chosen, so the server keeps answering 503 `generation_unavailable` for videos and the app keeps showing it as "not available yet"
+instead of pretending. With GEN_PROVIDER unset (the default) nothing is generated at all.
+CONTENT SAFETY (honest): this module does not moderate by itself. With Gemini, Google's own safety filters can refuse a prompt or a
+picture; that answer is turned into `generation_failed` and the slot is given back. A separate Sociax check of prompts and results
+is a later step.
 """
 import os
 import sqlite3
@@ -95,13 +99,62 @@ class FakeProvider(Provider):
                          "image/png" if kind == "image" else "video/mp4")
 
 
+class GeminiImageProvider(Provider):
+    """IMAGES only, through the Gemini API (generateContent, image output). The key is read from the environment by
+    `provider_from_env` and is sent only in the request header; it is never logged and never goes to the app. The prompt is not logged.
+    Every problem (network, 4xx / 5xx, a refusal by Google's safety filter, an answer without a picture) becomes ProviderFailed,
+    which gives the person's slot back."""
+    URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-image", client=None, timeout: float = 60.0):
+        self.api_key, self.model, self.client, self.timeout = api_key, model, client, timeout
+
+    def kinds(self) -> set:
+        return {"image"}
+
+    def generate(self, kind: str, prompt: str) -> GenResult:
+        if kind != "image":
+            raise ProviderFailed("unsupported kind")
+        import base64
+        body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}}
+        try:
+            if self.client is not None:
+                resp = self.client.post(self.URL.format(model=self.model), headers={"x-goog-api-key": self.api_key}, json=body,
+                                        timeout=self.timeout)
+            else:
+                import httpx
+                resp = httpx.post(self.URL.format(model=self.model), headers={"x-goog-api-key": self.api_key}, json=body,
+                                  timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:                   # never include the text of the error: it could repeat the request
+            raise ProviderFailed(getattr(getattr(e, "response", None), "status_code", None) and f"http_{e.response.status_code}"
+                                 or e.__class__.__name__)
+        for cand in data.get("candidates") or []:
+            for part in (cand.get("content") or {}).get("parts") or []:
+                inline = part.get("inlineData") or part.get("inline_data")
+                if inline and inline.get("data"):
+                    try:
+                        raw = base64.b64decode(inline["data"], validate=False)
+                    except Exception:
+                        raise ProviderFailed("bad_image")
+                    mime = inline.get("mimeType") or inline.get("mime_type") or "image/png"
+                    return GenResult(raw, mime)
+        raise ProviderFailed("no_image")         # blocked by the safety filter, or the model answered with text only
+
+
 def provider_from_env(env=None):
-    """GEN_PROVIDER = fake (dev only). Unset / unknown = None: AI Create answers "not available yet". Real providers are added here
-    once the owner has chosen one (name, key, price); nothing is guessed."""
+    """GEN_PROVIDER = fake (dev only) | gemini (images, needs GEMINI_API_KEY). Unset / unknown / key missing = None: AI Create answers
+    "not available yet". Nothing is guessed."""
     env = os.environ if env is None else env
     name = (env.get("GEN_PROVIDER") or "").strip().lower()
     if name == "fake":
         return FakeProvider()
+    if name == "gemini":
+        key = (env.get("GEMINI_API_KEY") or "").strip()
+        if not key:
+            return None
+        return GeminiImageProvider(key, (env.get("GEN_IMAGE_MODEL") or "gemini-2.5-flash-image").strip())
     return None
 
 

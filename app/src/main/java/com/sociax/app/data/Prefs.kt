@@ -1,6 +1,8 @@
 package com.sociax.app.data
 
 import android.content.Context
+import com.sociax.app.ui.theme.OldSociaxPurple
+import com.sociax.app.ui.theme.SociaxPurple
 
 /** Step 54 (plan v3.9.2 section 3): an account that signed in on this phone, shown on the login screen. Only a name and an @username
  *  (no e-mail, no token, no password). It is NOT a sign-in: tapping it opens the normal Google account chooser. */
@@ -49,7 +51,7 @@ class Prefs(context: Context) {
 
     /** Accent colour as ARGB (default = Sociax purple of the new design; a new key, so the old teal choice does not carry over). */
     var accent: Long
-        get() = sp.getLong("accent_v2", 0xFF6C4DF0)
+        get() = sp.getLong("accent_v2", SociaxPurple).let { if (it == OldSociaxPurple) SociaxPurple else it }
         set(v) = sp.edit().putLong("accent_v2", v).apply()
 
     /** "SMALL" | "NORMAL" | "LARGE". */

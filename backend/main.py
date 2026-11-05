@@ -29,7 +29,7 @@ import metrics  # Step 47: how long requests take / how often they fail (route p
 import ai_create  # Step 55 (plan v3.2 / v3.9): AI Create = generate -> preview -> explicit Yes / No
 import durable  # Step 54 (plan v3.9.2): the database survives restarts / deploys (snapshot backup + restore)
 
-API_VERSION = "0.64.0"
+API_VERSION = "0.73.0"
 app = FastAPI(title="Sociax API", version=API_VERSION)
 
 # Cloudinary credentials: server-side only (env vars). The Android app never sees the secret.
@@ -56,7 +56,7 @@ _perf_log = __import__("logging").getLogger("sociax.perf")
 
 
 _metrics = metrics.Metrics()                       # Step 47
-_NOT_MEASURED = ("/health", "/health/config", "/admin/metrics")      # health checks and the metrics page itself would only add noise
+_NOT_MEASURED = ("/health", "/health/ready", "/health/config", "/admin/metrics")      # health checks and the metrics page itself would only add noise
 
 
 @app.middleware("http")
@@ -83,7 +83,7 @@ async def _timing(request, call_next):
 async def _saved_data_gate(request, call_next):
     """Step 54 (plan v3.9.2 section 3): while the saved database is not loaded, answer 503 instead of pretending the account is
     empty. The app treats 5xx as "server starting": it stays signed in and retries. Health checks stay open."""
-    if not _durable.serving and request.url.path not in ("/health", "/health/config"):
+    if not _durable.serving and request.url.path not in ("/health", "/health/ready", "/health/config"):
         from starlette.responses import JSONResponse
         return JSONResponse({"detail": {"code": "data_unavailable",
                                         "message": "Your saved data is not available yet. Please try again in a minute."}},
@@ -446,7 +446,27 @@ def current_user(authorization: str = Header(None)) -> str:
 
 @app.get("/health")
 def health():
+    """LIVENESS (R9, report v0.67.0): the server process is running. Always 200; Render uses this one, so a slow database
+    restore never makes Render restart the server in a loop."""
     return {"ok": True}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """READINESS (R9): the server can really serve data now = the database answers AND the saved copy is loaded.
+    200 when ready, 503 (Retry-After 30) while starting / restoring. It reads only; it never changes any data.
+    Shows yes/no values and the restore state name only: no key, path or user data."""
+    from starlette.responses import JSONResponse
+    checks = {"database": False, "saved_data": bool(_durable.serving)}
+    try:
+        with closing(db()) as con:
+            con.execute("SELECT 1").fetchone()
+        checks["database"] = True
+    except Exception:
+        pass
+    ready = all(checks.values())
+    return JSONResponse({"ready": ready, **checks, "state": _durable.state}, status_code=200 if ready else 503,
+                        headers=None if ready else {"Retry-After": "30"})
 
 
 @app.get("/admin/metrics")

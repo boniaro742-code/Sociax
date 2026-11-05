@@ -1,6 +1,6 @@
 @if "%DEBUG%"=="" @echo off
 @rem Sociax Gradle launcher for Windows.
-@rem Needs gradle\wrapper\gradle-wrapper.jar. Create it once with:  gradle wrapper --gradle-version 8.9
+@rem Needs gradle\wrapper\gradle-wrapper.jar. Create it once with:  gradle wrapper --gradle-version 8.11.1
 @rem (that command also replaces this file with the official Gradle script).
 if "%OS%"=="Windows_NT" setlocal
 
@@ -37,7 +37,7 @@ if exist "%APP_HOME%\gradle\wrapper\gradle-wrapper.jar" goto execute
 
 echo.
 echo ERROR: gradle\wrapper\gradle-wrapper.jar is missing.
-echo Run once:  gradle wrapper --gradle-version 8.9   (then commit the jar)
+echo Run once:  gradle wrapper --gradle-version 8.11.1   (then commit the jar)
 goto fail
 
 :execute

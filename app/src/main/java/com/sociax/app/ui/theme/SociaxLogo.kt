@@ -19,7 +19,7 @@ import androidx.compose.ui.unit.sp
 import com.sociax.app.R
 
 /**
- * The real Sociax logo (the supplied artwork: purple chat bubble with a white play triangle + orange-pink play shape),
+ * The real Sociax logo (the supplied artwork: a blue-cyan and purple "X" with soft motion trails, background removed so it sits cleanly on light and dark screens),
  * shown as an image so it is identical to the reference. The artwork has no text, so [showName] adds the
  * "Sociax" name under it (opening / sign-in screens: plan "Sociax logo/name").
  */

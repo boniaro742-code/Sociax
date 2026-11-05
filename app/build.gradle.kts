@@ -8,11 +8,14 @@ if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
 
-// Backend address. The GitHub build sets SOCIAX_API_URL (your Render https address); otherwise the emulator address is used.
-// Step 51: an address typed without "https://" (for example "sociax-backend.onrender.com") used to be IGNORED and the APK silently
-// pointed at the emulator address, so a real phone could never reach the server. Now "https://" is added.
-val apiUrl: String = System.getenv("SOCIAX_API_URL")?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
-    ?.let { if (it.startsWith("https://") || it.startsWith("http://")) it else "https://$it" } ?: "http://10.0.2.2:8000"
+// Backend address. The GitHub build sets SOCIAX_API_URL (your Render https address).
+// Step 51: an address typed without "https://" (for example "sociax-backend.onrender.com") gets "https://" added.
+// Step 65 (report v0.64.0, P1): the emulator address http://10.0.2.2:8000 is now a DEBUG-ONLY fallback. A RELEASE build
+// (assembleRelease / bundleRelease) STOPS with a clear message unless SOCIAX_API_URL is a real https address, so a release APK
+// can never ship pointing at the emulator or at plain http (see the check at the bottom of this file).
+val apiUrlGiven: String? = System.getenv("SOCIAX_API_URL")?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+    ?.let { if (it.startsWith("https://") || it.startsWith("http://")) it else "https://$it" }
+val apiUrl: String = apiUrlGiven ?: "http://10.0.2.2:8000"
 
 // Step 41 (plan v3.8 section 28): AdMob ids. By default Google's public TEST ids are used (they only show test ads and earn nothing).
 // For real ads set the GitHub variables SOCIAX_ADMOB_APP_ID (ca-app-pub-XXXX~YYYY) and SOCIAX_ADMOB_NATIVE_UNIT_ID (ca-app-pub-XXXX/ZZZZ).
@@ -24,16 +27,22 @@ val admobAppId: String = System.getenv("SOCIAX_ADMOB_APP_ID")?.trim()
 val admobNativeUnit: String = System.getenv("SOCIAX_ADMOB_NATIVE_UNIT_ID")?.trim()
     ?.takeIf { Regex("^ca-app-pub-[0-9]{16}/[0-9]{10}$").matches(it) } ?: admobTestNativeUnit
 
+// Step 65: release signing inputs (all four are needed).
+val releaseKeystore: String? = System.getenv("SOCIAX_RELEASE_KEYSTORE")?.trim()?.takeIf { it.isNotEmpty() }
+val releaseStorePassword: String? = System.getenv("SOCIAX_RELEASE_STORE_PASSWORD")?.takeIf { it.isNotEmpty() }
+val releaseKeyAlias: String? = System.getenv("SOCIAX_RELEASE_KEY_ALIAS")?.trim()?.takeIf { it.isNotEmpty() }
+val releaseKeyPassword: String? = System.getenv("SOCIAX_RELEASE_KEY_PASSWORD")?.takeIf { it.isNotEmpty() }
+
 android {
     namespace = "com.sociax.app"
-    compileSdk = 34
+    compileSdk = 36   // Step 3 (report v0.67.0, R4): Google Play needs API 36 (Android 16) for new apps and updates since 2026-08-31
 
     defaultConfig {
         applicationId = "com.sociax.app"
         minSdk = 24
-        targetSdk = 34
-        versionCode = 59
-        versionName = "0.64.0"
+        targetSdk = 36
+        versionCode = 73
+        versionName = "0.73.0"
         // Backend URL only. NEVER put AI provider keys in the app.
         // 10.0.2.2 = your computer when using the Android emulator. Use your server URL for a real phone.
         buildConfigField("String", "API_BASE_URL", "\"$apiUrl\"")
@@ -42,21 +51,32 @@ android {
         manifestPlaceholders["admobAppId"] = admobAppId
     }
 
-    // A FIXED test-signing key (password "android" is the Android default for test keys), so the APK from every
-    // GitHub build has the SAME SHA-1 and Google sign-in keeps working. Not for the Play Store.
+    // DEBUG signing: a FIXED test key (password "android" is the Android default for test keys), so the APK from every GitHub build
+    // has the SAME SHA-1 and Google sign-in keeps working while you test. It is for testing ONLY and is never used for release.
+    // Step 65 (report v0.64.0, P1): RELEASE signing uses your OWN private key, given only through environment variables
+    // (GitHub Secrets), never written in this repository:
+    //   SOCIAX_RELEASE_KEYSTORE (path to your .jks file), SOCIAX_RELEASE_STORE_PASSWORD, SOCIAX_RELEASE_KEY_ALIAS, SOCIAX_RELEASE_KEY_PASSWORD
     signingConfigs {
         getByName("debug") {
             storeFile = rootProject.file("sociax-debug.keystore")
             storePassword = "android"; keyAlias = "androiddebugkey"; keyPassword = "android"
         }
+        if (releaseKeystore != null && releaseStorePassword != null && releaseKeyAlias != null && releaseKeyPassword != null) {
+            create("release") {
+                storeFile = rootProject.file(releaseKeystore)
+                storePassword = releaseStorePassword; keyAlias = releaseKeyAlias; keyPassword = releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
-        // Release is signed with the same fixed test key and is NOT shrunk, so "assembleRelease" gives an APK
-        // that installs on a phone (an unsigned release APK cannot be installed).
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            // Signed with YOUR release key when the four variables above are set; otherwise left unsigned and the build stops
+            // with a message (the debug test key is never used for release any more).
+            signingConfig = signingConfigs.findByName("release")
+            // A release app never falls back to the emulator address: empty when SOCIAX_API_URL is missing (the build stops first).
+            buildConfigField("String", "API_BASE_URL", "\"${apiUrlGiven ?: ""}\"")
         }
     }
     compileOptions {
@@ -107,4 +127,28 @@ dependencies {
     // Backend calls + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.6.0")
+}
+
+// Step 65 (report v0.64.0): RELEASE GATE. Only when a release build is requested (assembleRelease / bundleRelease / packageRelease);
+// debug builds (the normal GitHub APK) are never blocked by this.
+gradle.taskGraph.whenReady {
+    val releaseRequested = allTasks.any { it.project == project && it.name in setOf("assembleRelease", "bundleRelease", "packageRelease") }
+    if (releaseRequested) {
+        val problems = mutableListOf<String>()
+        val u = apiUrlGiven
+        if (u == null || !u.startsWith("https://") || u.contains("10.0.2.2") || u.contains("localhost")) {
+            problems += "SOCIAX_API_URL must be your real https server address (for example https://sociax-backend.onrender.com). Now: ${u ?: "not set"}."
+        }
+        if (releaseKeystore == null || releaseStorePassword == null || releaseKeyAlias == null || releaseKeyPassword == null) {
+            problems += "Release signing key missing: set SOCIAX_RELEASE_KEYSTORE, SOCIAX_RELEASE_STORE_PASSWORD, SOCIAX_RELEASE_KEY_ALIAS and SOCIAX_RELEASE_KEY_PASSWORD (your own private key, not the debug key)."
+        } else if (!rootProject.file(releaseKeystore).exists()) {
+            problems += "The release keystore file was not found at: $releaseKeystore"
+        }
+        if ((admobAppId == admobTestAppId || admobNativeUnit == admobTestNativeUnit) && System.getenv("SOCIAX_ALLOW_TEST_ADS") != "1") {
+            problems += "AdMob TEST ids are still used (they earn nothing): set SOCIAX_ADMOB_APP_ID and SOCIAX_ADMOB_NATIVE_UNIT_ID (or SOCIAX_ALLOW_TEST_ADS=1 for a test-only release candidate)."
+        }
+        if (problems.isNotEmpty()) {
+            throw GradleException("RELEASE BUILD STOPPED:\n - " + problems.joinToString("\n - "))
+        }
+    }
 }

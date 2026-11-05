@@ -58,10 +58,12 @@ fun BioScreen(me: com.sociax.app.data.Me, onOpenList: (String) -> Unit = {}, onS
         Spacer(Modifier.height(8.dp))
         Text(me.bio.ifBlank { addBio }, color = Ink.copy(.8f), fontSize = 14.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            Stat(compactCount(me.posts), tr("posts"))
-            Stat(compactCount(me.followers), tr("followers"), Modifier.clickable { onOpenList("followers") })
-            Stat(compactCount(me.following), tr("following"), Modifier.clickable { onOpenList("following") })
+        GlassPanel(Modifier.fillMaxWidth(), fill = LavenderFill) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+                Stat(compactCount(me.posts), tr("posts"))
+                Stat(compactCount(me.followers), tr("followers"), Modifier.clickable { onOpenList("followers") })
+                Stat(compactCount(me.following), tr("following"), Modifier.clickable { onOpenList("following") })
+            }
         }
         Spacer(Modifier.height(18.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -94,15 +96,7 @@ fun BioScreen(me: com.sociax.app.data.Me, onOpenList: (String) -> Unit = {}, onS
         }
         // the "Posts" tab line of the new design (the only tab this app has: there are no tagged photos)
         Spacer(Modifier.height(18.dp))
-        Row(Modifier.padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.GridView, null, tint = Accent, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(tr("posts"), color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-        }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline)) {
-            Box(Modifier.fillMaxWidth(0.3f).height(2.dp).align(Alignment.CenterStart).background(Accent))
-        }
-        Spacer(Modifier.height(10.dp))
+        ProfilePostsTab()
         if (myPosts.isNotEmpty()) PostsGrid(myPosts, onOpenPost)
         Spacer(Modifier.height(bottomBarClearance()))   // the docked tab bar covers the bottom of the page
     }

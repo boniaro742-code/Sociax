@@ -207,6 +207,41 @@ if not bh or int(bh.group(1)) < 48:
 if "AiHubScreen" not in (kt_root / "ui/screens/AiScreen.kt").read_text():
     problems.append("AiScreen.kt: AiHubScreen is missing")
 
+# ---- 10. design-only redesign colours and profile heading (plan v3.10.2) ----
+theme_kt = (kt_root / "ui/theme/Theme.kt").read_text()
+if not re.search(r"const val SociaxPurple: Long = 0xFF5838D8\b", theme_kt):
+    problems.append("Theme.kt: the primary accent must be purple #5838D8 (plan v3.10.2 section 1)")
+if not re.search(r"LavenderFill: Color get\(\) = if \(darkPalette\) [^\n]*else Color\(0xFFF5F3FC\)", theme_kt):
+    problems.append("Theme.kt: the light lavender surface must be #F5F3FC (plan v3.10.2 section 1)")
+if "var Accent by mutableStateOf(Color(SociaxPurple))" not in theme_kt or "listOf(SociaxPurple," not in theme_kt:
+    problems.append("Theme.kt: the default accent and the first accent choice must be SociaxPurple")
+if "OldSociaxPurple" not in (kt_root / "data/Prefs.kt").read_text():
+    problems.append("Prefs.kt: a phone that still saved the old purple #6C4DF0 must move to the plan purple (other saved accents are kept)")
+for f in sorted(kt_root.rglob("*.kt")):
+    if re.search(r"6C4DF0", f.read_text(), re.I) and f.name != "Theme.kt":
+        problems.append(f"{f.name}: the old purple #6C4DF0 is hard-coded; use SociaxPurple / Accent (plan v3.10.2)")
+pv = (kt_root / "ui/screens/ProfileView.kt").read_text()
+if "ProfileHeading(tr(\"tab_bio\")" not in pv or "TopBar(" in pv:
+    problems.append("ProfileView.kt: another person's profile needs the centered Profile heading (plan v3.10.2, Bio/Profile)")
+if "ProfilePostsTab()" not in (kt_root / "ui/screens/OtherScreens.kt").read_text():
+    problems.append("OtherScreens.kt: my Profile page must use the shared Posts tab row (plan v3.10.2, Bio/Profile)")
+if re.search(r"Tab\.values\(\)", bar) is None or "LavenderFill" not in bar:
+    problems.append("MainActivity.kt: the selected bottom-bar tab needs the soft lavender pill (plan v3.10.2 section 3, appearance only)")
+
+# ---- 11. leftover old colours (Step 67, plan v3.10.2: restrained purple, no teal / pink / navy) ----
+ad_kt = (kt_root / "ui/screens/AdScreens.kt").read_text()
+if re.search(r"2FE0B2", ad_kt, re.I):
+    problems.append("AdScreens.kt: the ad call-to-action must use the Sociax purple #5838D8, not the old teal")
+story_kt = (kt_root / "ui/screens/StoryScreens.kt").read_text(encoding="utf-8")
+if any("sweepGradient" in ln and "EC4899" in ln.upper() for ln in story_kt.splitlines()):
+    problems.append("StoryScreens.kt: story rings must be purple only (plan v3.10.2: restrained purple story rings)")
+for f in sorted(kt_root.rglob("*.kt")):
+    if f.name == "Theme.kt":
+        continue
+    t = f.read_text(encoding="utf-8")
+    if re.search(r"Color\(0x[0-9A-F]{2}0B1220\)", t, re.I):
+        problems.append(f"{f.name}: dark-blue overlay Color(0x..0B1220) found; use a neutral black scrim (plan v3.10.2: clean high-contrast overlays)")
+
 for w in warnings:
     print("warning:", w)
 for p in problems:

@@ -38,6 +38,12 @@ services:
         value: grok-4.6
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      # Step 65: AI Create (images). Leave GEN_PROVIDER empty = OFF (default, no cost). Set it to "gemini" to turn ON image generation
+      # (uses GEMINI_API_KEY above). Videos stay "not available yet" until a video provider is chosen.
+      - key: GEN_PROVIDER
+        sync: false
+      - key: GEN_IMAGE_MODEL
+        value: gemini-2.5-flash-image
       - key: FREE_AI_REQUESTS
         value: "10"
       - key: CHAPA_SECRET_KEY   # TEST key only
