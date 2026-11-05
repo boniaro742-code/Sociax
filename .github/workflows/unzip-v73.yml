@@ -1,0 +1,27 @@
+name: Unzip v73
+on:
+  push:
+    branches: [v73]
+    paths:
+      - 'Sociax_v0_73_0.zip'
+permissions:
+  contents: write
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip and commit
+        run: |
+          set -e
+          mkdir /tmp/new
+          unzip -q Sociax_v0_73_0.zip -d /tmp/new
+          rm -rf /tmp/new/Sociax/.github
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name Sociax_v0_73_0.zip -exec rm -rf {} +
+          cp -a /tmp/new/Sociax/. .
+          rm Sociax_v0_73_0.zip
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add -A
+          git commit -m "Sociax v0.73.0"
+          git push
