@@ -113,7 +113,7 @@ class CloudinaryStore:
         if r.status_code == 404:
             return None
         if r.status_code != 200:
-            raise StoreUnavailable(f"HTTP {r.status_code}")
+            raise StoreUnavailable(f"HTTP {r.status_code} {r.headers.get('x-cld-error', '')[:60]}")
         return r.content
 
     def put(self, slot: str, data: bytes) -> None:
