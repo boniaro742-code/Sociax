@@ -95,7 +95,7 @@ class CloudinaryStore:
         self.cloud_name, self.api_key, self.api_secret, self.timeout = cloud_name, api_key, api_secret, timeout
 
     def _public_id(self, slot: str) -> str:
-        return f"{self.FOLDER}/sociax-db-{slot}.bin"          # raw files keep the extension inside the public id
+        return f"{self.FOLDER}/sociax-db-{slot}.txt"          # raw files keep the extension inside the public id
 
     def get(self, slot: str):
         try:
