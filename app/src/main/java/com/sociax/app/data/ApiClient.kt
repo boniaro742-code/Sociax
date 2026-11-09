@@ -434,6 +434,9 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
         call("GET", "/shorts/saved" + (before?.let { "?before=$it" } ?: ""))
             .getJSONArray("shorts").mapObjects { it.toShortVideo() }
 
+    /** Step 75 (plan v4.0.1): ONE short video, with the server's visibility rule applied (404 = deleted, hidden, private, blocked). */
+    suspend fun short(id: Long): ShortVideo = call("GET", "/shorts/$id").toShortVideo()
+
     suspend fun deleteShort(id: Long) { call("DELETE", "/shorts/$id") }
     suspend fun setShortLike(id: Long, on: Boolean) { call(if (on) "POST" else "DELETE", "/shorts/$id/like") }
     suspend fun setShortReaction(id: Long, kind: String, on: Boolean) { call(if (on) "POST" else "DELETE", "/shorts/$id/react/$kind") }

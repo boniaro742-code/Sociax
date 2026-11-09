@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -37,12 +38,15 @@ import com.sociax.app.R
 import com.sociax.app.data.ApiClient
 import com.sociax.app.data.ApiException
 import com.sociax.app.data.Post
+import com.sociax.app.data.Prefs
 import com.sociax.app.data.REACTION_KINDS
+import com.sociax.app.data.ShortVideo
 import com.sociax.app.data.StoryGroup
 import com.sociax.app.data.timeAgo
 import com.sociax.app.ui.theme.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -59,6 +63,16 @@ class PostController(
     /** Step 40: Home sets this to true. "Not interested" / "Hide creator" belong to the feed only (not to profiles or saved lists). */
     var feedControls = false
 
+    /** Step 74: Home connects these so a follow / "Hide creator" done on a photo card also updates the video cards of the same person. */
+    var onFollowChanged: ((String, String) -> Unit)? = null
+    var onCreatorHidden: ((String) -> Unit)? = null
+
+    fun setFollowStatus(username: String, status: String) {
+        posts.indices.forEach { i -> if (posts[i].username == username) posts[i] = posts[i].copy(followStatus = status) }
+    }
+
+    fun removeCreator(username: String) { posts.removeAll { it.username == username } }
+
     /** The post stayed on screen for one second: a clean "seen" signal for the For You ranker (sent in the background). */
     fun seen(p: Post) { if (!p.mine) api.trackEvent("post", p.id, "impression", 1000) }
 
@@ -73,7 +87,10 @@ class PostController(
 
     fun hideCreator(p: Post) {
         scope.launch {
-            try { api.recFeedback("hide_creator", "post", p.id); posts.removeAll { it.username == p.username } } catch (e: Exception) { fail(e) }
+            try {
+                api.recFeedback("hide_creator", "post", p.id); posts.removeAll { it.username == p.username }
+                onCreatorHidden?.invoke(p.username)
+            } catch (e: Exception) { fail(e) }
         }
     }
 
@@ -117,7 +134,8 @@ class PostController(
         scope.launch {
             try {
                 val status = api.setFollow(p.username, follow)
-                posts.indices.forEach { i -> if (posts[i].username == p.username) posts[i] = posts[i].copy(followStatus = status) }
+                setFollowStatus(p.username, status)
+                onFollowChanged?.invoke(p.username, status)
             } catch (e: Exception) { fail(e) }
         }
     }
@@ -133,67 +151,57 @@ class PostController(
 
 @Composable
 fun HomeScreen(
-    api: ApiClient, refreshKey: Int, onCreate: () -> Unit, onSearch: () -> Unit,
+    api: ApiClient, feed: HomeFeedState, refreshKey: Int, onCreate: () -> Unit, onSearch: () -> Unit,
     onNotifications: () -> Unit, onMessages: () -> Unit,
     onAddStory: () -> Unit, onOpenStory: (List<StoryGroup>, Int) -> Unit,
-    onComments: (Post) -> Unit, notifUnread: Int = 0
+    onComments: (Post) -> Unit, notifUnread: Int = 0, onShortComments: (ShortVideo) -> Unit = {},
+    onOpenVideo: (ShortVideo) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
-    val posts = remember { mutableStateListOf<Post>() }
-    var tab by remember { mutableStateOf("for_you") }
-    var loading by remember { mutableStateOf(true) }
-    var endReached by remember { mutableStateOf(false) }
-    var notice by remember { mutableStateOf<String?>(null) }
-    var reload by remember { mutableIntStateOf(0) }
-    var storyGroups by remember { mutableStateOf<List<StoryGroup>>(emptyList()) }
-    val ctl = remember { PostController(api, scope, posts) { notice = it }.also { it.feedControls = true } }
-    // Step 40: For You uses the ranked list (a cursor per refresh). If the server answers newest-first instead, paging continues with "before".
-    var cursor by remember { mutableStateOf<String?>(null) }
-    var rankedMode by remember { mutableStateOf(false) }
-    var pageFailed by remember { mutableStateOf(false) }      // a failed "next page" must not retry in a tight loop; "Try again" restarts
+    val context = LocalContext.current
+    val prefs = remember { Prefs(context) }
+    // Step 75 (plan v4.0.1): the rows, the paging and the scroll position live in [feed] (kept by MainActivity), so they survive a page that
+    // opens on top of Home (the full-screen video). Step 74: photos and videos in one list; `order` says in which order they are shown.
+    val posts = feed.posts
+    val videos = feed.videos
+    val order = feed.order
+    val ctl = remember(feed) { PostController(api, scope, posts) { feed.notice = it }.also { it.feedControls = true } }
+    val vctl = remember(feed) { HomeVideoController(api, scope, videos) { feed.notice = it } }
+    remember(ctl, vctl) {       // a follow / "Hide creator" on one kind of card also updates the other kind
+        ctl.onFollowChanged = { u, st -> vctl.setFollowStatus(u, st) }
+        ctl.onCreatorHidden = { u -> vctl.removeCreator(u) }
+        vctl.onFollowChanged = { u, st -> ctl.setFollowStatus(u, st) }
+        vctl.onCreatorHidden = { u -> ctl.removeCreator(u) }
+        true
+    }
 
-    suspend fun loadPage(reset: Boolean) {
-        loading = true
-        try {
-            if (reset) { cursor = null; rankedMode = tab == "for_you" }
-            val page: List<Post>
-            val last: Boolean
-            if (rankedMode) {
-                val r = api.feedForYou(if (reset) null else cursor)
-                cursor = r.nextCursor
-                if (!r.ranked) rankedMode = false
-                page = r.items
-                last = if (r.ranked) r.nextCursor == null else r.items.size < 20
-            } else {
-                page = api.feed(tab, if (reset) null else posts.lastOrNull()?.id)
-                last = page.size < 20
-            }
-            if (reset) { posts.clear(); endReached = false }
-            posts.addAll(page.filter { n -> posts.none { it.id == n.id } })
-            if (last) endReached = true
-            if (reset) notice = null
-            pageFailed = false
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: ApiException) {
-            notice = e.message; pageFailed = true
-        } catch (e: Exception) {
-            notice = "Cannot reach the Sociax server. Is the backend running?"; pageFailed = true
+    // First entry, a refresh, another tab chip or a new refreshKey = load again. Coming back from the full-screen video (or a quick switch
+    // to another bottom tab) keeps the rows exactly as they were.
+    val loadKey = "${feed.tab}/$refreshKey/${feed.reload}"
+    LaunchedEffect(loadKey) {
+        if (feed.canKeep(loadKey)) { feed.keepOnReturn = false; return@LaunchedEffect }
+        feed.signature = loadKey
+        feed.keepOnReturn = false
+        // Story rings: reloaded together with the feed (e.g. after watching or sharing a story). A failure just hides the rings.
+        launch {
+            try { feed.storyGroups = api.stories() }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { }
         }
-        loading = false
+        feed.loadPage(api, true)
     }
 
-    LaunchedEffect(tab, refreshKey, reload) { loadPage(true) }
-
-    // Story rings: reloaded together with the feed (e.g. after watching or sharing a story). A failure just hides the rings.
-    LaunchedEffect(refreshKey, reload) {
-        try { storyGroups = api.stories() }
-        catch (e: CancellationException) { throw e }
-        catch (e: Exception) { }
+    // the rows in the order they are shown (a photo or a video that was removed, e.g. "Not interested", simply disappears)
+    val shown: List<HomeItem> = order.mapNotNull { r ->
+        if (r.video) videos.firstOrNull { it.id == r.id }?.let { HomeItem.Video(it) }
+        else posts.firstOrNull { it.id == r.id }?.let { HomeItem.Photo(it) }
     }
+    val listState = feed.listState
+    val activeVideo by remember { derivedStateOf { pickActiveVideo(listState) } }      // the one video card that may play inline
 
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = listState,
         // the docked tab bar sits on top of the page, so the last post must be able to scroll above it
         contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 16.dp + bottomBarClearance()),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -217,40 +225,49 @@ fun HomeScreen(
             }
         }
         item { AlarmPrompt() }      // Step 33: optional daily-alarm prompt (Yes / No / X); shows nothing once answered
-        item { StoriesRow(storyGroups, onAddStory) { onOpenStory(storyGroups, it) } }
+        item { StoriesRow(feed.storyGroups, onAddStory) { onOpenStory(feed.storyGroups, it) } }
         item { // For you / Following as two chips, refresh at the end
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SmallChip(tr("for_you"), { tab = "for_you" }, active = tab == "for_you")
-                SmallChip(tr("following"), { tab = "following" }, active = tab == "following")
+                SmallChip(tr("for_you"), { feed.tab = "for_you" }, active = feed.tab == "for_you")
+                SmallChip(tr("following"), { feed.tab = "following" }, active = feed.tab == "following")
                 Spacer(Modifier.weight(1f))
                 Icon(
                     Icons.Filled.Refresh, tr("a11y_refresh"), tint = Ink.copy(.7f),
-                    modifier = Modifier.size(36.dp).clip(CircleShape).clickable { reload++ }.padding(7.dp)
+                    modifier = Modifier.size(36.dp).clip(CircleShape).clickable { feed.reload++ }.padding(7.dp)
                 )
             }
         }
-        notice?.let { item {   // Step 35: a feed failure always offers "Try again" (never a silent empty feed)
+        feed.notice?.let { item {   // Step 35: a feed failure always offers "Try again" (never a silent empty feed)
             Column {
                 Text(it, color = ErrorInk, fontSize = 13.sp)
                 Text(tr("try_again"), color = Accent, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(50)).clickable { notice = null; reload++ }
+                    modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(50)).clickable { feed.notice = null; feed.reload++ }
                         .padding(horizontal = 4.dp, vertical = 6.dp))
             }
         } }
-        if (!loading && posts.isEmpty() && notice == null) item {
+        if (!feed.loading && shown.isEmpty() && feed.notice == null) item {
             Text(
-                if (tab == "following") tr("empty_following") else tr("empty_foryou"),
+                if (feed.tab == "following") tr("empty_following") else tr("empty_foryou"),
                 color = Ink.copy(.7f), modifier = Modifier.padding(24.dp)
             )
         }
-        items(posts, key = { it.id }) { p ->
-            LaunchedEffect(p.id) { delay(1000); ctl.seen(p) }      // Step 40: counts only after 1 s really on screen (pre-loaded items do not count)
-            PostCard(p, ctl, onComments)
-            if (p.id == posts.last().id && !endReached && !loading && !pageFailed) {
-                LaunchedEffect(p.id) { scope.launch { loadPage(false) } }
+        items(shown, key = { it.key }) { row ->
+            when (row) {
+                is HomeItem.Photo -> {
+                    val p = row.post
+                    LaunchedEffect(p.id) { delay(1000); ctl.seen(p) }      // Step 40: counts only after 1 s really on screen (pre-loaded items do not count)
+                    PostCard(p, ctl, onComments)
+                }
+                is HomeItem.Video -> HomeVideoCard(
+                    row.video, active = activeVideo == row.key, autoplay = prefs.autoplay, dataSaver = prefs.dataSaver,
+                    ctl = vctl, onComments = onShortComments, onOpen = onOpenVideo
+                )
+            }
+            if (row.key == shown.last().key && !feed.endReached && !feed.loading && !feed.pageFailed) {
+                LaunchedEffect(row.key) { scope.launch { feed.loadPage(api, false) } }
             }
         }
-        if (loading) item {
+        if (feed.loading) item {
             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
         }
     }
@@ -258,7 +275,7 @@ fun HomeScreen(
 
 /** One icon with its number (♥ 1.2K, 💬 128). */
 @Composable
-private fun PostAction(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, count: Int?, tint: Color, onClick: () -> Unit) {
+internal fun PostAction(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, count: Int?, tint: Color, onClick: () -> Unit) {
     Row(
         Modifier.clip(RoundedCornerShape(50)).clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically

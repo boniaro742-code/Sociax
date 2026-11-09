@@ -47,6 +47,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -93,7 +95,11 @@ class ShortsState {
     var nextGap = 3                     // how many ordinary videos before the next ad (3 or 4, varied)
     private var adCounter = 0L
 
-    fun reset() { items.clear(); loaded = false; endReached = false; page = 0; cursor = null; ranked = true; clearAds() }
+    // Step 75 (plan v4.0.1): used by the full-screen player that opens from a Home video (and ignored by the Short Video tab)
+    val unavailable = mutableStateListOf<Long>()      // videos found deleted / hidden / no longer allowed: the page says so and plays nothing
+    val hiddenCreators = HashSet<String>()            // "Hide creator" done in that player: Home applies it when the person comes back
+
+    fun reset() { items.clear(); loaded = false; endReached = false; page = 0; cursor = null; ranked = true; unavailable.clear(); hiddenCreators.clear(); clearAds() }
 
     /** The pages of the pager in order: video, video, video, [ad], video ... Ads whose anchor video is gone are ignored. */
     fun slots(): List<FeedSlot> = buildList {
@@ -129,8 +135,12 @@ private fun msg(e: Exception) =
 @Composable
 fun ShortVideoScreen(
     api: ApiClient, state: ShortsState, ads: AdsController, onCreate: () -> Unit, onComments: (ShortVideo) -> Unit,
-    onBack: () -> Unit = {}, onSearch: () -> Unit = {}
+    onBack: () -> Unit = {}, onSearch: () -> Unit = {},
+    // Step 75 (plan v4.0.1): set ONLY when this screen is the full-screen player opened from a Home video. It then has a Back arrow instead of
+    // "+" / refresh / search, no tab bar below, and a tap on the creator opens the profile. The Short Video tab passes neither.
+    onClose: (() -> Unit)? = null, onOpenProfile: ((String) -> Unit)? = null
 ) {
+    val viewer = onClose != null
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val scope = rememberCoroutineScope()
@@ -248,8 +258,32 @@ fun ShortVideoScreen(
 
     fun hideCreator(s: ShortVideo) {
         scope.launch {
-            try { api.recFeedback("hide_creator", "short", s.id); state.items.removeAll { it.username == s.username } }
+            try { api.recFeedback("hide_creator", "short", s.id); state.hiddenCreators.add(s.username); state.items.removeAll { it.username == s.username } }
             catch (e: CancellationException) { throw e } catch (e: Exception) { notice = msg(e) }
+        }
+    }
+
+    // The tab bar is below the Short Video tab; the Home player has none, so it only keeps clear of the system navigation bar.
+    val clearance = if (viewer) WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 8.dp else bottomBarClearance()
+
+    // Step 75 (plan v4.0.1 section 3): the video that was tapped, and the ones one swipe away, are asked of the SERVER again (same rules as the
+    // feed: public / followers / private account / block / deleted / hidden) BEFORE they play. 404 = "not available": the page says so and
+    // nothing is played or shown from it. A network failure does not block (the video was already allowed a moment ago).
+    val checked = remember { HashSet<Long>() }
+    val cleared = remember { mutableStateListOf<Long>() }      // checked and allowed: only these pages show a picture / play (Home player only)
+    suspend fun verify(id: Long) {
+        if (!checked.add(id) || id in state.unavailable) return
+        try {
+            val fresh = api.short(id)
+            state.replace(id) { fresh }
+            cleared.add(id)
+        } catch (e: CancellationException) {
+            checked.remove(id); throw e
+        } catch (e: ApiException) {
+            if (e.code == 404 || e.code == 403) state.unavailable.add(id)
+            else { checked.remove(id); cleared.add(id) }       // the server could not be asked (e.g. error 500): not a reason to block
+        } catch (e: Exception) {
+            checked.remove(id); cleared.add(id)               // no network: the video was allowed a moment ago, so it is not blocked
         }
     }
 
@@ -271,6 +305,15 @@ fun ShortVideoScreen(
             val pager = rememberPagerState(
                 initialPage = state.page.coerceIn(0, (state.slots().size - 1).coerceAtLeast(0))
             ) { state.slots().size }
+            if (viewer) LaunchedEffect(pager.currentPage, state.items.size) {
+                val here = state.slots().getOrNull(pager.currentPage)
+                val id = (here as? FeedSlot.Video)?.item?.id ?: return@LaunchedEffect
+                verify(id)                                   // the opened video first, so a blocked one never plays
+                val ids = state.items.map { it.id }
+                val at = ids.indexOf(id)
+                ids.getOrNull(at + 1)?.let { verify(it) }
+                ids.getOrNull(at - 1)?.let { verify(it) }
+            }
             LaunchedEffect(pager.currentPage) {
                 state.page = pager.currentPage
                 val slots = state.slots()
@@ -315,6 +358,9 @@ fun ShortVideoScreen(
                         val s = slot.item
                         ShortPage(
                             s, active = pager.currentPage == i, autoplay = prefs.autoplay, dataSaver = prefs.dataSaver,
+                            clearance = clearance, blocked = s.id in state.unavailable,
+                            holding = viewer && s.id !in cleared && s.id !in state.unavailable,
+                            onProfile = onOpenProfile?.let { open -> { open(s.username) } },
                             onLike = { toggleLike(s) }, onComments = { onComments(s) }, onFollow = { toggleFollow(s) },
                             onReact = { toggleReaction(s, it) }, onSave = { toggleSave(s) },
                             onDelete = { delete(s) }, onReport = { report(s, it) },
@@ -339,14 +385,18 @@ fun ShortVideoScreen(
         // (Step 59: there is no "Following" tab: the server has no following-only feed for short videos, so none is shown.)
         Column(Modifier.fillMaxWidth().statusBarsPadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)
+                if (onClose != null) GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose, size = 40, onMedia = true)   // Step 75: back to Home
+                else GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(tr("for_you"), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                     Box(Modifier.padding(top = 4.dp).width(28.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White))
                 }
-                GlassIconButton(Icons.Filled.Refresh, tr("a11y_refresh"), { state.reset() }, size = 40, onMedia = true)   // Step 40: a new ranking
-                Spacer(Modifier.width(8.dp))
-                GlassIconButton(Icons.Filled.Search, tr("search"), onSearch, size = 40, onMedia = true)
+                if (viewer) Spacer(Modifier.size(40.dp))      // keeps "For you" in the middle; no refresh / search here (they would lose the opened video)
+                else {
+                    GlassIconButton(Icons.Filled.Refresh, tr("a11y_refresh"), { state.reset() }, size = 40, onMedia = true)   // Step 40: a new ranking
+                    Spacer(Modifier.width(8.dp))
+                    GlassIconButton(Icons.Filled.Search, tr("search"), onSearch, size = 40, onMedia = true)
+                }
             }
             notice?.takeIf { state.items.isNotEmpty() }?.let {
                 Text(it, color = Color(0xFFFFB4A8), fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp))
@@ -357,14 +407,14 @@ fun ShortVideoScreen(
 
 @Composable
 private fun ShortPage(
-    s: ShortVideo, active: Boolean, autoplay: Boolean, dataSaver: Boolean,
+    s: ShortVideo, active: Boolean, autoplay: Boolean, dataSaver: Boolean, clearance: Dp, blocked: Boolean, holding: Boolean, onProfile: (() -> Unit)?,
     onLike: () -> Unit, onComments: () -> Unit, onFollow: () -> Unit,
     onReact: (String) -> Unit, onSave: () -> Unit, onDelete: () -> Unit, onReport: (String) -> Unit,
     onNotInterested: () -> Unit, onHideCreator: () -> Unit, onImpression: () -> Unit, onShared: () -> Unit,
     onWatched: (Long, Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    LaunchedEffect(s.id, active) { if (active) { delay(1000); onImpression() } }      // Step 40: seen = 1 s as the current video
+    LaunchedEffect(s.id, active, blocked, holding) { if (active && !blocked && !holding) { delay(1000); onImpression() } }      // Step 40: seen = 1 s as the current video
     var paused by remember(s.id) { mutableStateOf(false) }
     var startedByUser by remember(s.id) { mutableStateOf(false) }      // used when Autoplay is off
     var menu by remember { mutableStateOf(false) }
@@ -372,6 +422,24 @@ private fun ShortPage(
     var captionCut by remember(s.id) { mutableStateOf(false) }
     val mayPlay = autoplay || startedByUser
     val url = (if (dataSaver) s.videoUrlLow else s.videoUrl) ?: s.videoUrl
+
+    // Step 75 (plan v4.0.1): deleted / hidden / no longer allowed: a clear message, no picture, no player, no actions.
+    if (blocked) {
+        Box(Modifier.fillMaxSize().background(MediaBackdrop), contentAlignment = Alignment.Center) {
+            Column(Modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Filled.VideocamOff, null, tint = Color.White.copy(.8f), modifier = Modifier.size(44.dp))
+                Spacer(Modifier.height(12.dp))
+                Text(tr("short_unavailable"), color = Color.White, fontSize = 15.sp, textAlign = TextAlign.Center)
+            }
+        }
+        return
+    }
+
+    // Step 75: the full-screen player waits for the server's answer about THIS video before it shows a picture or plays (usually instant)
+    if (holding) {
+        Box(Modifier.fillMaxSize().background(MediaBackdrop), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
+        return
+    }
 
     Box(
         Modifier.fillMaxSize().pointerInput(s.id, mayPlay, s.liked) {
@@ -396,11 +464,12 @@ private fun ShortPage(
 
         // right action rail (new design): the author's photo with a purple "+" (follow), heart, comments, save, share, more
         Column(
-            Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 16.dp + bottomBarClearance()),
+            Modifier.align(Alignment.BottomEnd).padding(end = 10.dp, bottom = 16.dp + clearance),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Box(contentAlignment = Alignment.BottomCenter) {
-                Box(Modifier.border(2.dp, Color.White, CircleShape).padding(2.dp)) { Avatar(s.avatarUrl, 44) }
+                Box(Modifier.clip(CircleShape).then(if (onProfile != null) Modifier.clickable(onClick = onProfile) else Modifier)
+                    .border(2.dp, Color.White, CircleShape).padding(2.dp)) { Avatar(s.avatarUrl, 44) }
                 if (s.followStatus == "none") {
                     Box(
                         Modifier.offset(y = 9.dp).size(22.dp).clip(CircleShape).background(Accent).clickable(onClick = onFollow),
@@ -439,10 +508,11 @@ private fun ShortPage(
 
         // bottom-left: author name, time, caption, emoji reactions
         // (bottom padding leaves room for the docked tab bar)
-        Column(Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 76.dp, bottom = 10.dp + bottomBarClearance())) {
+        Column(Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 76.dp, bottom = 10.dp + clearance)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(s.username, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false).then(if (onProfile != null) Modifier.clickable(onClick = onProfile) else Modifier))
                 Spacer(Modifier.width(8.dp))
                 Text(timeAgo(s.createdAt) + if (s.audience == "followers") " · Followers" else "",
                     color = Color.White.copy(.7f), fontSize = 12.sp, maxLines = 1)

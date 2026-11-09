@@ -115,7 +115,8 @@ private sealed interface Overlay {
     data class Conversation(val chat: ChatSummary) : Overlay
     data class GroupInfo(val chat: ChatSummary) : Overlay
     data class Comments(val post: Post) : Overlay
-    data class ShortComments(val short: ShortVideo) : Overlay
+    data class ShortComments(val short: ShortVideo, val backTo: Overlay? = null) : Overlay   // backTo: the full-screen Home video it was opened from (Step 75)
+    data class HomeVideo(val startId: Long) : Overlay   // Step 75 (plan v4.0.1): a Home video tapped -> the full-screen Short Video player on that video
     data object Blocked : Overlay
     data object Saved : Overlay
     data object SavedShorts : Overlay   // Step 21
@@ -147,12 +148,14 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     var tab by remember { mutableStateOf(Tab.Home) }
     var feedKey by remember { mutableIntStateOf(0) }   // bump to reload the feed
     val shorts = remember { ShortsState() }            // Short Video feed, kept while pages open on top
+    val homeFeed = remember { HomeFeedState() }        // Step 75: the Home rows + scroll position, kept while pages open on top of Home
+    var homeViewer by remember { mutableStateOf<ShortsState?>(null) }   // Step 75: the player opened from a Home video (null = none open)
     val aiChat = remember { AiChatState() }            // Step 59: the AI conversation, kept while the person visits other tabs (wiped on log out)
     val ads = remember { AdsController(api, activity.applicationContext) }   // Step 41: AdMob (Free accounts only, decided by the server)
     // Step 41: every time the Short Video tab is the screen the person is looking at (opened, or back from Settings / a payment),
     // ask the SERVER again who may see ads: a Pro purchase switches ads off at once, a reached cap or a new day is noticed.
     LaunchedEffect(stage, tab, overlay) {
-        if (stage == Stage.Ready && tab == Tab.Video && overlay == null) ads.refresh(activity)
+        if (stage == Stage.Ready && ((tab == Tab.Video && overlay == null) || overlay is Overlay.HomeVideo)) ads.refresh(activity)
     }
 
     // Phone back button closes an open page. Leaving comments/search may change counts, so reload the feed.
@@ -162,11 +165,16 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     val rootView = LocalView.current
     val focusManager = LocalFocusManager.current
     val hideKeyboard = rememberKeyboardHider()
+    // Step 75: leaving the full-screen Home video: what was done there is applied to the Home rows (no reload, the scroll position stays)
+    fun closeHomeVideo() { homeViewer?.let { homeFeed.absorbViewer(it); it.clearAds() }; homeViewer = null }
     BackHandler(enabled = overlay != null) {
         val keyboardUp = ViewCompat.getRootWindowInsets(rootView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
         if (keyboardUp) { hideKeyboard(); focusManager.clearFocus(); return@BackHandler }
         val o = overlay
+        val inHomeVideo = homeViewer != null      // while the Home video (or its comments / a profile opened from it) is open Home is NOT reloaded
         overlay = when (o) {
+            is Overlay.HomeVideo -> { closeHomeVideo(); null }
+            is Overlay.ShortComments -> o.backTo
             is Overlay.GroupInfo -> Overlay.Conversation(o.chat)       // group info goes back to its chat
             Overlay.Blocked, Overlay.Saved, Overlay.SavedShorts, Overlay.ChangeLock -> Overlay.Settings   // the Settings lists go back to Settings
             is Overlay.Comments -> returnTo.also { returnTo = null }
@@ -174,7 +182,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
             is Overlay.FollowList -> o.backTo
             else -> null
         }
-        feedKey++
+        if (!inHomeVideo) feedKey++
     }
 
     // Decide the starting screen: returning users skip onboarding.
@@ -388,7 +396,8 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     }
 
     // Step 59: status bar icons: light over the dark video / story, otherwise they follow the theme (dark icons on the light page)
-    val mediaScreen = stage == Stage.Ready && ((overlay == null && tab == Tab.Video) || overlay is Overlay.Story)
+    val mediaScreen = stage == Stage.Ready && ((overlay == null && tab == Tab.Video) || overlay is Overlay.Story || overlay is Overlay.HomeVideo ||
+        (overlay == Overlay.NewPost && PhotoEditorFlag.open))   // Step 76: the dark photo editor needs light status-bar icons
     LaunchedEffect(dark, mediaScreen) { activity.applySystemBars(dark || mediaScreen) }
 
     // Step 57: Firebase ends the session by itself (account disabled / deleted, revoked elsewhere) -> back to sign-in with a clear message.
@@ -397,7 +406,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
         val stop = auth.observeEnded {
             if (stage != Stage.LoggedOut) {
                 error = Strings.get(lang, "err_session_ended")
-                ads.reset(); shorts.reset(); aiChat.reset(); locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0
+                ads.reset(); shorts.reset(); homeFeed.reset(); homeViewer = null; aiChat.reset(); locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0
                 me = Me(onboarded = false); stage = Stage.LoggedOut
             }
         }
@@ -470,7 +479,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                 }
                 // Step 56: every page opened on top of the tabs (Search, Chat, AI, comments, edit profile, new post ...) is lifted above the keyboard HERE, once.
                 // navigationBarsPadding first, then imePadding: Compose subtracts what was already used, so nothing is added twice (no blank gap).
-                else -> Box(Modifier.fillMaxSize().then(if (overlay != null && overlay !is Overlay.Story) Modifier.navigationBarsPadding().imePadding() else Modifier)) { when (val o = overlay) {
+                else -> Box(Modifier.fillMaxSize().then(if (overlay != null && overlay !is Overlay.Story && overlay !is Overlay.HomeVideo) Modifier.navigationBarsPadding().imePadding() else Modifier)) { when (val o = overlay) {
                     Overlay.EditProfile -> EditProfileScreen(me, api, onSaved = { me = it }, onBack = { overlay = null })
                     Overlay.Settings -> SettingsScreen(
                         mode = themeMode, onMode = { themeMode = it; prefs.themeMode = it.name },
@@ -487,12 +496,12 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                         onBlocked = { overlay = Overlay.Blocked },
                         onSaved = { overlay = Overlay.Saved },
                         onSavedShorts = { overlay = Overlay.SavedShorts },
-                        onDeleted = { auth.uid?.let { prefs.forgetAccount(it) }; prefs.clearOnboardingDraft(); prefs.pushEnabled = false; auth.signOut(); ads.reset(); shorts.reset(); aiChat.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0; me = Me(onboarded = false); stage = Stage.LoggedOut },
+                        onDeleted = { auth.uid?.let { prefs.forgetAccount(it) }; prefs.clearOnboardingDraft(); prefs.pushEnabled = false; auth.signOut(); ads.reset(); shorts.reset(); homeFeed.reset(); homeViewer = null; aiChat.reset(); lock.clear(); lockSet = false; locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0; me = Me(onboarded = false); stage = Stage.LoggedOut },
                         onLogout = {
                             // Step 54 (plan v3.9.2 section 1): log out ONLY ends this session. Nothing on the server is touched (no call to
                             // deleteAccount), the App Lock and the settings stay on the phone, and only what is on screen in memory is cleared so
                             // that a different account signing in next sees nothing of this one.
-                            val finish = { auth.signOut(); prefs.clearOnboardingDraft(); ads.reset(); shorts.reset(); aiChat.reset(); locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0; me = Me(onboarded = false); stage = Stage.LoggedOut }
+                            val finish = { auth.signOut(); prefs.clearOnboardingDraft(); ads.reset(); shorts.reset(); homeFeed.reset(); homeViewer = null; aiChat.reset(); locked = false; overlay = null; tab = Tab.Home; returnTo = null; notifUnread = 0; chatUnread = 0; me = Me(onboarded = false); stage = Stage.LoggedOut }
                             // Step 46: tell the server this phone no longer wants push for this account BEFORE signing out (3 s at most; the phone stops showing pushes at once anyway)
                             if (prefs.pushEnabled) scope.launch { withTimeoutOrNull(3000) { com.sociax.app.data.PushRegistrar.disable(activity, api) }; prefs.pushEnabled = false; finish() }
                             else finish()
@@ -521,8 +530,20 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     Overlay.NewShort -> CreateShortScreen(api, onBack = { overlay = null },
                         defaultFollowersOnly = me.defaultAudience == "followers",
                         onPosted = { overlay = null; shorts.reset() })   // reload the feed so the new clip shows up
-                    is Overlay.ShortComments -> ShortCommentsScreen(api, o.short, onBack = { overlay = null },
-                        onChanged = { shorts.replace(o.short.id) { it.copy(commentCount = it.commentCount + 1) } })
+                    is Overlay.ShortComments -> ShortCommentsScreen(api, o.short, onBack = { overlay = o.backTo },
+                        onChanged = {
+                            shorts.replace(o.short.id) { it.copy(commentCount = it.commentCount + 1) }
+                            homeViewer?.replace(o.short.id) { it.copy(commentCount = it.commentCount + 1) }
+                        })
+                    // Step 75 (plan v4.0.1): the Short Video player, opened on the Home video that was tapped; Back goes to Home
+                    is Overlay.HomeVideo -> {
+                        val vs = homeViewer
+                        if (vs != null) ShortVideoScreen(api, vs, ads, onCreate = {},
+                            onComments = { overlay = Overlay.ShortComments(it, backTo = o) },
+                            onClose = { closeHomeVideo(); overlay = null },
+                            onOpenProfile = { name -> overlay = Overlay.UserProfile(name, backTo = o) })
+                        else LaunchedEffect(Unit) { overlay = null }
+                    }
                     Overlay.NewStory -> CreateStoryScreen(api, onBack = { overlay = null },
                         onPosted = { overlay = null; feedKey++ })   // reload so the new ring shows up
                     is Overlay.Story -> StoryViewerScreen(api, o.groups, o.index, onClose = { overlay = null; feedKey++ })
@@ -544,7 +565,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     null -> Box(Modifier.fillMaxSize()) {
                         Box(Modifier.fillMaxSize().then(if (tab == Tab.Video) Modifier else Modifier.statusBarsPadding())) {
                             when (tab) {
-                                Tab.Home -> HomeScreen(api, feedKey,
+                                Tab.Home -> HomeScreen(api, homeFeed, feedKey,
                                     onCreate = { overlay = Overlay.NewPost },
                                     onSearch = { overlay = Overlay.Search },
                                     onNotifications = { overlay = Overlay.Notifications },
@@ -552,7 +573,12 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                     onMessages = { tab = Tab.Chat },
                                     onAddStory = { overlay = Overlay.NewStory },
                                     onOpenStory = { groups, i -> overlay = Overlay.Story(groups, i) },
-                                    onComments = { overlay = Overlay.Comments(it) })
+                                    onComments = { overlay = Overlay.Comments(it) },
+                                    onShortComments = { overlay = Overlay.ShortComments(it) },   // Step 74: comments of a video card in Home
+                                    onOpenVideo = { v ->     // Step 75: tap on a Home video -> that exact video, full screen
+                                        homeViewer = homeFeed.makeViewer(v.id)
+                                        if (homeViewer != null) overlay = Overlay.HomeVideo(v.id)
+                                    })
                                 Tab.Bio -> BioScreen(me,
                                     onOpenList = { kind -> me.username?.let { overlay = Overlay.FollowList(it, kind) } },
                                     onSettings = { overlay = Overlay.Settings },

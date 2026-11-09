@@ -18,6 +18,17 @@
   9. (Step 58, plan v3.9.5 / v3.9.6) EXACTLY five bottom tabs Home, Bio, Short Video, Chat, AI (in that order); the AI tab opens the AI Hub;
      the Chat list has no AI card / button / shortcut and AI Chat is opened from the hub only; the tab circles are at least 48 dp,
      named for TalkBack and marked as tabs.
+  12. (Step 74, plan v3.10.2 Home Feed Content Mix) Home shows photos AND videos in one feed: HomeScreen uses HomeVideoCard + mixHomeRefs and a
+     LazyListState; only ONE video is active (pickActiveVideo); the video player starts muted (volume 0) and takes audio focus only when
+     the sound is on; it pauses with the app and is released when the card leaves; a video that fails never blocks the photos.
+  13. (Step 75, plan v4.0.1) tapping a Home video opens THAT video in the full-screen Short Video player (same list, not a second feed); Back /
+     Android Back return to Home WITHOUT a reload (scroll position kept); the opened video and its neighbours are re-checked with the server;
+     an unavailable one shows a message and no picture / player; the Short Video tab and the five tabs stay; log out wipes the Home feed.
+  14. (Step 76, plan v3.10.4 / v3.10.5 Stage A #38) Photo Editor: PhotoMath.java is pure (no android import) and lists at least 20 filters, every
+     filter has a name row in all five languages; the editor screen has the Filters / Adjust / Crop tabs, the strength slider, Reset, the
+     discard question and the drag-to-move crop; the Create post page opens the editor after a photo is picked, shows the EDITED photo and
+     uploads through loadEditedJpeg (never the old unedited path); the picked file is only read (no output stream on it); EXIF is applied;
+     CI runs tools/PhotoMathTest.java (the real maths, compiled and run).
 Usage: python tools/check_android_sources.py [path to app/src/main]   (exit code 1 when a problem is found)"""
 import re, sys, pathlib
 
@@ -241,6 +252,126 @@ for f in sorted(kt_root.rglob("*.kt")):
     t = f.read_text(encoding="utf-8")
     if re.search(r"Color\(0x[0-9A-F]{2}0B1220\)", t, re.I):
         problems.append(f"{f.name}: dark-blue overlay Color(0x..0B1220) found; use a neutral black scrim (plan v3.10.2: clean high-contrast overlays)")
+
+# ---- 12. Home feed: photos and videos in one list (Step 74, plan v3.10.2 Home Feed Content Mix) ----
+hv_kt = (kt_root / "ui/screens/HomeVideoCard.kt").read_text(encoding="utf-8")
+hs_kt = (kt_root / "ui/screens/HomeScreen.kt").read_text(encoding="utf-8")
+hf_kt = (kt_root / "ui/screens/HomeFeedState.kt").read_text(encoding="utf-8")
+for needle, why in [("HomeVideoCard(", "HomeScreen must show video cards"), ("pickActiveVideo(", "only one video may be active"),
+                    ("feed.listState", "HomeScreen must use the kept LazyListState to know which video is in view")]:
+    if needle not in hs_kt:
+        problems.append(f"HomeScreen.kt: {why} (missing `{needle}`)")
+if "mixHomeRefs(" not in hf_kt:
+    problems.append("HomeFeedState.kt: photos and videos must be mixed with mixHomeRefs")
+for needle, why in [("volume = 0f", "the Home video must start muted"), ("setAudioAttributes(AudioAttributes.DEFAULT, !muted)", "audio focus only while the sound is on"),
+                    ("exo.release()", "the player must be released when the card leaves"), ("onPlayerError", "a playback error must not crash the feed"),
+                    ("ON_PAUSE", "the video must pause when the app goes to the background")]:
+    if needle not in hv_kt:
+        problems.append(f"HomeVideoCard.kt: {why} (missing `{needle}`)")
+if hv_kt.count("ExoPlayer.Builder(") != 1:
+    problems.append("HomeVideoCard.kt: exactly one ExoPlayer is built, inside HomeVideoPlayer")
+if re.search(r"playWhenReady\s*=\s*true", hv_kt):
+    problems.append("HomeVideoCard.kt: playWhenReady must follow the `playing` flag (only the active card plays), never a fixed true")
+
+# ---- 13. Home video tap -> full-screen Short Video player (Step 75, plan v4.0.1) ----
+main_kt = (kt_root / "MainActivity.kt").read_text(encoding="utf-8")
+sv_kt = (kt_root / "ui/screens/ShortVideoScreens.kt").read_text(encoding="utf-8")
+api_kt = (kt_root / "data/ApiClient.kt").read_text(encoding="utf-8")
+for needle, why in [("onOpen(v)", "a tap on the Home video (and the marked full-screen button) must open the full-screen player"),
+                    ("a11y_open_fullscreen", "the full-screen button needs a name for TalkBack")]:
+    if needle not in hv_kt:
+        problems.append(f"HomeVideoCard.kt: {why} (missing `{needle}`)")
+if hv_kt.count("onOpen(v)") < 2:
+    problems.append("HomeVideoCard.kt: both the video area AND the marked button must call onOpen(v)")
+if "LazyListState()" not in hf_kt or "fun canKeep" not in hf_kt:
+    problems.append("HomeFeedState.kt: the Home rows and the scroll position must be kept outside the Home screen (LazyListState + canKeep)")
+if "Overlay.HomeVideo" not in main_kt or "homeFeed.makeViewer(" not in main_kt:
+    problems.append("MainActivity.kt: Home must open the player through Overlay.HomeVideo / homeFeed.makeViewer (the SAME video, from the same list)")
+if "if (!inHomeVideo) feedKey++" not in main_kt:
+    problems.append("MainActivity.kt: Back from the Home video (or its comments / profile) must NOT bump feedKey (that reloads Home and loses the scroll position)")
+if "closeHomeVideo()" not in main_kt or "homeFeed.absorbViewer(" not in main_kt:
+    problems.append("MainActivity.kt: leaving the player must apply its changes to the Home rows (absorbViewer)")
+if main_kt.count("homeFeed.reset()") < 3:
+    problems.append("MainActivity.kt: every log out path must wipe the Home feed (homeFeed.reset())")
+if "ShortVideoScreen(api, shorts, ads," not in main_kt:
+    problems.append("MainActivity.kt: the Short Video TAB must stay (ShortVideoScreen with the tab's own state)")
+for needle, why in [("fun short(id: Long)", "ApiClient.short(id) (server visibility rule) is needed to re-check the opened video")]:
+    if needle not in api_kt:
+        problems.append(f"ApiClient.kt: {why}")
+for needle, why in [("api.short(id)", "the opened video and its neighbours are re-checked with the server"), ("state.unavailable", "an unavailable video must be blocked"),
+                    ("short_unavailable", "an unavailable video needs a clear message")]:
+    if needle not in sv_kt:
+        problems.append(f"ShortVideoScreens.kt: {why} (missing `{needle}`)")
+if "blocked" in sv_kt:
+    i = sv_kt.index("if (blocked)"); j = sv_kt.index("return", i)
+    if "AsyncImage" in sv_kt[i:j] or "ShortPlayer(" in sv_kt[i:j]:
+        problems.append("ShortVideoScreens.kt: a blocked page must show no picture and no player (private media is never exposed)")
+if sv_kt.count("onClose != null") < 2 and "val viewer = onClose != null" not in sv_kt:
+    problems.append("ShortVideoScreens.kt: the full-screen mode (onClose) must have its own Back arrow")
+
+# ---- 14. Photo Editor (Step 76, plan v3.10.4 / v3.10.5 Stage A #38) ----
+pm_path = kt_root / "data/PhotoMath.java"
+pe_path = kt_root / "data/PhotoEdit.kt"
+ed_path = kt_root / "ui/screens/PhotoEditorScreen.kt"
+if not (pm_path.exists() and pe_path.exists() and ed_path.exists()):
+    problems.append("Photo Editor files missing (PhotoMath.java, PhotoEdit.kt, PhotoEditorScreen.kt)")
+else:
+    pm_src = pm_path.read_text(encoding="utf-8")
+    pe_kt = pe_path.read_text(encoding="utf-8")
+    ed_kt = ed_path.read_text(encoding="utf-8")
+    ss_kt = (kt_root / "ui/screens/SocialScreens.kt").read_text(encoding="utf-8")
+    iu_kt = (kt_root / "data/ImageUtils.kt").read_text(encoding="utf-8")
+    main14 = (kt_root / "MainActivity.kt").read_text(encoding="utf-8")
+    if re.search(r"^\s*import\s+android\.", pm_src, re.M) or "androidx" in pm_src:
+        problems.append("PhotoMath.java must stay pure (no android / androidx import) so CI can run it as a normal program")
+    ids_m = re.search(r"FILTER_IDS\s*=\s*\{(.*?)\}\s*;", pm_src, re.S)
+    filter_ids = re.findall(r'"([a-z0-9_]+)"', ids_m.group(1)) if ids_m else []
+    if len(filter_ids) < 20:
+        problems.append(f"PhotoMath.FILTER_IDS must list at least 20 filters (found {len(filter_ids)}); plan v3.10.4 section 2")
+    if len(set(filter_ids)) != len(filter_ids) or (filter_ids and filter_ids[0] != "original"):
+        problems.append("PhotoMath.FILTER_IDS: ids must be unique and the first must be \"original\"")
+    spec_rows = re.findall(r"/\*\s*([a-z0-9_]+)\s*\*/\s*\{", pm_src)
+    if spec_rows != filter_ids:
+        problems.append("PhotoMath.java: FILTER_SPECS rows must follow FILTER_IDS one by one (same names, same order)")
+    for fid in filter_ids:
+        if f"filter_{fid}" not in rows:
+            problems.append(f"Strings.kt: missing the name row filter_{fid} (every filter needs its name in five languages)")
+    for needle, why in [('tr("filter_$id")', "the tray must show the translated filter name"), ("PhotoMath.FILTER_IDS", "the tray must list the real filters"),
+                        ("Slider(", "filter strength slider (0-100 %) and the Adjust sliders"), ("editor_intensity", "a visible strength control"),
+                        ("editor_reset", "Reset"), ("BackHandler", "Back must ask before throwing edits away"), ("AlertDialog(", "the discard question"),
+                        ("detectDragGestures", "drag-to-move crop"), ("PhotoEditorFlag.open = true", "light status-bar icons over the dark editor"),
+                        ("EditorTab.Filters", "Filters tab"), ("EditorTab.Adjust", "Adjust tab"), ("EditorTab.Crop", "Crop tab"),
+                        ("a11y_rotate_left", "rotate left (named for TalkBack)"), ("a11y_rotate_right", "rotate right"), ("a11y_flip", "flip"),
+                        ("Role.Tab", "tabs are named / marked for TalkBack"), ("withContext(Dispatchers.Default)", "thumbnails / turning must not run on the main thread")]:
+        if needle not in ed_kt:
+            problems.append(f"PhotoEditorScreen.kt: {why} (missing `{needle}`)")
+    for needle, why in [("PhotoEditorScreen(", "choosing a photo must open the Photo Editor"), ("EditedPhotoPreview(", "the page must show the EDITED photo"),
+                        ("loadEditedJpeg(", "the upload must apply the edits"), ("it.second == chosenEdits", "a remembered upload belongs to one photo AND its edits"),
+                        ("editing = true", "picking a photo must open the editor")]:
+        if needle not in ss_kt:
+            problems.append(f"SocialScreens.kt (Create post): {why} (missing `{needle}`)")
+    cp = ss_kt[ss_kt.index("fun CreatePostScreen"):ss_kt.index("// ---------------- Comments")]
+    if "loadJpeg(" in cp:
+        problems.append("SocialScreens.kt: Create post must not use the unedited loadJpeg path any more (edits would be lost)")
+    if cp.count("busy = false; return@launch") < 2:
+        problems.append("SocialScreens.kt: a failed export must stop the spinner (busy = false) and keep the draft")
+    for name, src in [("PhotoEdit.kt", pe_kt), ("PhotoEditorScreen.kt", ed_kt), ("ImageUtils.kt", iu_kt)]:
+        if "openOutputStream" in src or "DocumentsContract.deleteDocument" in src:
+            problems.append(f"{name}: the picked photo must only be READ (non-destructive editing), never written or deleted")
+    for needle, why in [("ExifInterface", "the camera's EXIF turn must be applied (a portrait photo must not be saved sideways)"), ("PhotoMath.exifTransform", "EXIF turn via the tested table"),
+                        ("fun loadEditedJpeg", "export of the edited photo"), ("Dispatchers.Default", "export runs off the main thread"),
+                        ("check(coloured.compress", "a failed JPEG save must be an error, not a silent empty file")]:
+        if needle not in pe_kt:
+            problems.append(f"PhotoEdit.kt: {why} (missing `{needle}`)")
+    if "decodeUpright(" not in iu_kt:
+        problems.append("ImageUtils.kt: loadJpeg must read photos upright through decodeUpright (profile / story / post)")
+    if "PhotoEditorFlag.open" not in main14:
+        problems.append("MainActivity.kt: the status-bar icons must turn light while the photo editor is open (PhotoEditorFlag)")
+    wf = pathlib.Path(".github/workflows/build.yml")
+    if wf.exists():
+        wf_txt = wf.read_text(encoding="utf-8")
+        if "javac" not in wf_txt or "java -cp /tmp/pm PhotoMathTest" not in wf_txt:
+            problems.append("build.yml: CI must compile AND run tools/PhotoMathTest.java (the real filter / crop / EXIF maths)")
 
 for w in warnings:
     print("warning:", w)

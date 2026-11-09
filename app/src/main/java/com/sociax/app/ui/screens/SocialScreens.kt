@@ -62,21 +62,34 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var uri by remember { mutableStateOf<Uri?>(null) }
+    // Step 76 (plan v3.10.4): choosing a photo opens the Photo Editor; the edits are only a list of choices (the file is never changed)
+    var edits by remember { mutableStateOf(PhotoEdits()) }
+    var editing by remember { mutableStateOf(false) }
     var caption by remember { mutableStateOf("") }
     var followersOnly by remember { mutableStateOf(defaultFollowersOnly) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // Step 35: a photo that is already on Cloudinary is remembered, so "try again" after a failed save sends only the post record
     // (no second upload, no orphan file). The server also treats a repeated request for the same upload as the same post.
-    var uploaded by remember { mutableStateOf<Pair<Uri, String>?>(null) }
+    // Step 76: the remembered upload belongs to ONE photo AND ONE set of edits; a changed edit is uploaded again.
+    var uploaded by remember { mutableStateOf<Triple<Uri, PhotoEdits, String>?>(null) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri = it ?: uri }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { picked ->
+        if (picked != null) { uri = picked; edits = PhotoEdits(); editing = true }
+    }
     val errPick = tr("err_choose_photo")
+    val errRead = tr("err_edit_load")
+    val errExport = tr("err_edit_export")
 
+    val editUri = uri
+    if (editing && editUri != null) {
+        PhotoEditorScreen(editUri, edits, onCancel = { editing = false }, onDone = { edits = it; editing = false })
+    } else {
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         TopBar(tr("new_post"), onBack)
         GlassPanel(Modifier.fillMaxWidth().height(320.dp), corner = 28) {
-            if (uri != null) AsyncImage(uri, tr("a11y_selected_photo"), Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            val shown = uri
+            if (shown != null) EditedPhotoPreview(shown, edits, Modifier.fillMaxSize())
             else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Icon(Icons.Filled.AddPhotoAlternate, null, tint = Accent, modifier = Modifier.size(48.dp))
                 Spacer(Modifier.height(8.dp))
@@ -85,9 +98,12 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
             }
         }
         Spacer(Modifier.height(10.dp))
-        PillButton(if (uri == null) tr("choose_gallery") else tr("change_photo"), {
-            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        }, filled = false)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            PillButton(if (uri == null) tr("choose_gallery") else tr("change_photo"), {
+                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }, filled = false)
+            if (uri != null) PillButton(tr("edit_photo"), { editing = true })
+        }
         Spacer(Modifier.height(14.dp))
         GlassField(caption, { caption = it.take(2200) }, tr("write_caption"))
         Spacer(Modifier.height(14.dp))
@@ -100,14 +116,19 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
         if (busy) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.CenterHorizontally))
         else PillButton(tr("post_btn"), {
             val chosen = uri ?: run { error = errPick; return@PillButton }
+            val chosenEdits = edits
             scope.launch {
                 busy = true; error = null
                 try {
-                    val publicId = uploaded?.takeIf { it.first == chosen }?.second ?: run {
-                        val bytes = loadJpeg(context, chosen, 1440)
+                    val publicId = uploaded?.takeIf { it.first == chosen && it.second == chosenEdits }?.third ?: run {
+                        // Reads the ORIGINAL again and applies turn / crop / filter / adjust once. A failure here keeps the draft and uploads nothing.
+                        val bytes = try { loadEditedJpeg(context, chosen, chosenEdits, 1440) }
+                        catch (e: CancellationException) { throw e }
+                        catch (e: Exception) { error = if (chosenEdits.isDefault) errRead else errExport; busy = false; return@launch }
+                        catch (e: OutOfMemoryError) { error = errExport; busy = false; return@launch }
                         val sig = api.signUpload("post", bytes.size)
                         api.uploadToCloudinary(sig, bytes)
-                        uploaded = chosen to sig.publicId
+                        uploaded = Triple(chosen, chosenEdits, sig.publicId)
                         sig.publicId
                     }
                     // "Published" is shown only after the SERVER confirmed the post record (onPosted runs after createPost returns)
@@ -122,6 +143,7 @@ fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, d
                 busy = false
             }
         }, Modifier.fillMaxWidth())
+    }
     }
 }
 

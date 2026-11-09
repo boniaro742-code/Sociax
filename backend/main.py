@@ -29,7 +29,7 @@ import metrics  # Step 47: how long requests take / how often they fail (route p
 import ai_create  # Step 55 (plan v3.2 / v3.9): AI Create = generate -> preview -> explicit Yes / No
 import durable  # Step 54 (plan v3.9.2): the database survives restarts / deploys (snapshot backup + restore)
 
-API_VERSION = "0.73.0"
+API_VERSION = "0.76.0"
 app = FastAPI(title="Sociax API", version=API_VERSION)
 
 # Cloudinary credentials: server-side only (env vars). The Android app never sees the secret.
