@@ -1,0 +1,360 @@
+name: Sociax Android APK Build
+
+# ONE APK workflow only (this file). Matches Sociax v0.85.0: Kotlin + Jetpack Compose app, C++ video engine (NDK),
+# FastAPI backend (backend/) and the Go ranking engine (backend-go/).
+#
+# When it runs:
+#   1. Every push to main, master or ANY version branch whose name starts with "v" (v82, v85, v86 ...).
+#      A push that only changes a .zip or a .md file does NOT start a build (the zip is unzipped first).
+#   2. By hand: GitHub > Actions > "Sociax Android APK Build" > Run workflow > choose the branch (for example v85).
+#      NOTE: a commit made by github-actions itself (the "Unzip Sociax_v0_xx_0.zip" commit) does NOT start other
+#      workflows on its own - GitHub blocks that. After the unzip finishes, press "Run workflow" for that branch.
+run-name: Sociax build - ${{ github.ref_name }} - ${{ github.event_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_release:
+        description: "Also build the signed RELEASE APK (needs the release secrets, see README Step 65)"
+        type: boolean
+        default: false
+  push:
+    branches: [main, master, "v*"]
+    paths-ignore:
+      - "*.zip"
+      - "**/*.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sociax-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  # The APK. This job does NOT wait for the backend checks below: a problem there never blocks it.
+  # ---------------------------------------------------------------------------------------------
+  build:
+    name: Build Sociax APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Android source sanity checks (strings in 5 languages, brackets, resources)
+        run: python3 tools/check_android_sources.py app/src/main
+
+      - name: App and backend agree on every address (Step 40)
+        run: python3 tools/check_api_contract.py
+
+      - name: Photo editor maths - filters, strength, Adjust, crop, EXIF (Step 76, runs the REAL PhotoMath.java)
+        run: |
+          mkdir -p /tmp/pm
+          javac -d /tmp/pm app/src/main/java/com/sociax/app/data/PhotoMath.java tools/PhotoMathTest.java
+          java -cp /tmp/pm PhotoMathTest
+
+      - name: Native video engine - runs the REAL C++ engine.cpp with address + undefined-behaviour checks (Step 77, plan v4.0.3)
+        run: |
+          g++ -std=c++17 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+            -Iapp/src/main/cpp/sociax_engine app/src/main/cpp/sociax_engine/engine.cpp tools/engine_test.cpp -o /tmp/engine_test
+          /tmp/engine_test
+
+      - name: Kotlin <-> C++ (JNI) names, types, numbers, CMake, 16 KB flag (Step 77)
+        run: python3 tools/check_jni.py
+
+      - name: Play target check (Step 3 / R4 - API 36, AGP, Gradle)
+        run: python3 tools/check_play_target.py
+
+      - name: Secrets scan (Step 71 / R12 - no private key, token or service-account file in the project)
+        run: python3 tools/check_secrets.py
+
+      - name: Check project files
+        run: |
+          echo "Repository root:"
+          pwd
+          ls -la
+          missing=0
+          for f in gradlew settings.gradle.kts build.gradle.kts app/build.gradle.kts gradle/wrapper/gradle-wrapper.properties; do
+            if [ ! -f "./$f" ]; then
+              echo "::error title=Missing file::$f is missing from the repository root. Upload the CONTENTS of the Sociax folder (app, backend, gradle, gradlew, settings.gradle.kts, .github ...), not the Sociax folder itself."
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ] || exit 1
+          chmod +x ./gradlew
+
+      # The real gradle-wrapper.jar cannot be produced without Gradle. If it is not committed yet,
+      # generate it here with the Gradle 8.11.1 installed above. If this fails, ./gradlew still works
+      # (its launcher falls back to the installed Gradle 8.11.1).
+      - name: Make sure the Gradle wrapper jar exists
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::warning title=gradle-wrapper.jar not committed::Generating it for this run. To fix it for good, run 'gradle wrapper --gradle-version 8.11.1' once and commit gradle/wrapper/gradle-wrapper.jar."
+            gradle wrapper --gradle-version 8.11.1 --no-daemon || echo "::warning::Wrapper generation failed; using the ./gradlew fallback launcher."
+            chmod +x ./gradlew
+          fi
+
+      # Step 3 (R4): the app is built against Android 16 (API 36); AGP 8.9.1 uses build-tools 35.0.0. This only makes sure they exist (harmless if already there).
+      - name: Make sure Android SDK 36 is installed
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" "ndk;27.0.12077973" "cmake;3.22.1" >/dev/null 2>&1 || true
+          fi
+
+      - name: Check the backend address
+        env:
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL || secrets.SOCIAX_API_URL }}
+        run: |
+          if [ -z "$SOCIAX_API_URL" ]; then
+            echo "::warning title=SOCIAX_API_URL is not set::The APK will try http://10.0.2.2:8000 (only works in the Android emulator). For a real phone set it: GitHub > Settings > Secrets and variables > Actions > Variables > SOCIAX_API_URL = your Render address (https://...onrender.com)."
+          else
+            case "$SOCIAX_API_URL" in
+              http://*) echo "::warning title=SOCIAX_API_URL is plain http::A RELEASE build refuses http. Use https://... (your Render address).";;
+            esac
+            echo "APK will talk to: $SOCIAX_API_URL"
+          fi
+
+      - name: Check the Start.io ads (Step 41)
+        env:
+          SOCIAX_STARTIO_APP_ID: ${{ vars.SOCIAX_STARTIO_APP_ID }}
+          SOCIAX_STARTIO_TEST_ADS: ${{ vars.SOCIAX_STARTIO_TEST_ADS }}
+        run: |
+          if [ "$SOCIAX_STARTIO_TEST_ADS" = "1" ]; then
+            echo "::warning title=Start.io TEST ads::SOCIAX_STARTIO_TEST_ADS=1, so this APK shows Start.io TEST ads only (no income). Remove that variable for real ads."
+          else
+            echo "Start.io REAL ads are on (App ID: ${SOCIAX_STARTIO_APP_ID:-210216857 built in}). Never tap your own ads."
+          fi
+
+      - name: Build debug APK
+        shell: bash
+        env:
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL || secrets.SOCIAX_API_URL }}
+          SOCIAX_STARTIO_APP_ID: ${{ vars.SOCIAX_STARTIO_APP_ID }}
+          SOCIAX_STARTIO_TEST_ADS: ${{ vars.SOCIAX_STARTIO_TEST_ADS }}
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      # Only when the build failed: put the real error at the top of the run page, so it is easy to copy.
+      - name: Show the build errors (copy these lines)
+        if: failure()
+        shell: bash
+        run: |
+          if [ ! -f build.log ]; then
+            echo "The Gradle build did not start. Open the red step above and copy its error." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## The APK build failed. First errors:"
+            echo '```'
+            grep -E '^e: |What went wrong|Execution failed|Could not |AAPT|error:|Unresolved|Duplicate' -A2 build.log | head -60
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E '^e: ' build.log | head -10 | while IFS= read -r line; do echo "::error title=Kotlin error::${line}"; done
+          exit 0
+
+      - name: Upload the full build log (only if the build failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sociax-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Show the SHA-1 (add it in Firebase for Google sign-in)
+        run: keytool -list -v -keystore sociax-debug.keystore -storepass android -alias androiddebugkey | grep -E "SHA1|SHA256"
+
+      - name: Name the APK with its version
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/Sociax-v${VERSION}.apk"
+          ls -la dist
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sociax-Android-APK
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------------------------
+  # Step 65 (report v0.64.0): the signed RELEASE APK, built ONLY when you press "Run workflow" and tick build_release.
+  # It never uses the debug test key. It stops with a clear message when the https address, the release key is missing or Start.io TEST ads are on.
+  # Secrets needed (GitHub > Settings > Secrets and variables > Actions > Secrets):
+  #   SOCIAX_RELEASE_KEYSTORE_B64 (your .jks file turned into base64), SOCIAX_RELEASE_STORE_PASSWORD, SOCIAX_RELEASE_KEY_ALIAS, SOCIAX_RELEASE_KEY_PASSWORD
+  # ---------------------------------------------------------------------------------------------
+  release-apk:
+    name: Build signed RELEASE APK
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Make sure Android SDK 36 is installed
+        run: |
+          if [ -n "$ANDROID_HOME" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" "ndk;27.0.12077973" "cmake;3.22.1" >/dev/null 2>&1 || true
+          fi
+
+      - name: Put the release key on the runner
+        env:
+          KEYSTORE_B64: ${{ secrets.SOCIAX_RELEASE_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error title=Release key missing::Add the secret SOCIAX_RELEASE_KEYSTORE_B64 (your release .jks file as base64). The debug test key is NOT used for release."
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/sociax-release.jks"
+          chmod +x ./gradlew
+
+      - name: Build release APK
+        shell: bash
+        env:
+          SOCIAX_API_URL: ${{ vars.SOCIAX_API_URL || secrets.SOCIAX_API_URL }}
+          SOCIAX_STARTIO_APP_ID: ${{ vars.SOCIAX_STARTIO_APP_ID }}
+          SOCIAX_STARTIO_TEST_ADS: ${{ vars.SOCIAX_STARTIO_TEST_ADS }}
+          SOCIAX_RELEASE_KEYSTORE: ${{ runner.temp }}/sociax-release.jks
+          SOCIAX_RELEASE_STORE_PASSWORD: ${{ secrets.SOCIAX_RELEASE_STORE_PASSWORD }}
+          SOCIAX_RELEASE_KEY_ALIAS: ${{ secrets.SOCIAX_RELEASE_KEY_ALIAS }}
+          SOCIAX_RELEASE_KEY_PASSWORD: ${{ secrets.SOCIAX_RELEASE_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Name the release APK with its version
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/Sociax-v${VERSION}-release.apk"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Sociax-Android-RELEASE-APK
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------------------------
+  # The backend checks (real FastAPI / pydantic) = the RELEASE GATE (plan v3.6 section 5): when one fails the run is RED and
+  # the release candidate must not be called ready. The APK job above is separate, so the APK is still delivered for testing.
+  # ---------------------------------------------------------------------------------------------
+  backend-checks:
+    name: Backend checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r backend/requirements.txt
+
+      # Step 48: test_rank_engine.py builds and starts the real Go engine and compares it with ranker.py
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend-go/go.mod
+
+      - name: Python syntax check
+        run: python -m compileall -q backend
+
+      - name: Run every backend check
+        working-directory: backend
+        env:
+          DEV_AUTH: "1"
+        run: |
+          failed=0
+          for t in test_*.py; do
+            echo "=== $t"
+            python "$t" || failed=1
+          done
+          exit $failed
+
+      - name: Backup restore proof (Step 73 / R8 - save, restore into a different file, compare every table)
+        run: python3 tools/check_backup_restore.py
+
+  # ---------------------------------------------------------------------------------------------
+  # Step 48: the optional Go engine (backend-go/). Release gate like the backend checks: a red run means "not ready".
+  # ---------------------------------------------------------------------------------------------
+  go-engine:
+    name: Go engine checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend-go
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: backend-go/go.mod
+
+      - name: Formatting (gofmt)
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "::error::gofmt needed on: $unformatted"; exit 1; fi
+
+      - name: Static checks (go vet)
+        run: go vet ./...
+
+      - name: Tests with the race detector (includes the parity test against the Python ranker)
+        run: go test ./... -race -count=1
+
+      - name: Does ranker.py still give the answers saved in parity.json?
+        working-directory: .
+        run: python3 tools/gen_rank_parity.py --check
+
+      - name: Build the service
+        run: go build -o /tmp/sociax-engine ./cmd/sociax-engine
+
+      - name: Deployment checker works (self-test against fakes, no network)
+        working-directory: .
+        run: python3 tools/check_engine_deploy.py --self-test
+
+      - name: Start the REAL engine and run the deployment checker against it
+        working-directory: .
+        env:
+          ENGINE_TOKEN: ci-only-secret-0123456789abcdef0123
+          PORT: "18080"
+        run: |
+          /tmp/sociax-engine > /tmp/engine.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break; sleep 0.5; done
+          python3 tools/check_engine_deploy.py http://127.0.0.1:18080 --rounds 20
+          rc=$?
+          kill -TERM $pid; wait $pid || true
+          if grep -q "ci-only-secret" /tmp/engine.log; then echo "::error::the secret appears in the engine log"; exit 1; fi
+          exit $rc
