@@ -42,8 +42,8 @@ android {
         applicationId = "com.sociax.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 82
-        versionName = "0.82.0"
+        versionCode = 83
+        versionName = "0.82.1"
         // Backend URL only. NEVER put AI provider keys in the app.
         // 10.0.2.2 = your computer when using the Android emulator. Use your server URL for a real phone.
         buildConfigField("String", "API_BASE_URL", "\"$apiUrl\"")
@@ -108,6 +108,16 @@ android {
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }
 
+// v0.82.1: some libraries ask for a NEWER Kotlin standard library (2.4.x) than this project's compiler (Kotlin 1.9.24) can read
+// ("Class 'kotlin.Unit' was compiled with an incompatible version of Kotlin"). Every Kotlin standard-library piece is held at 1.9.24.
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlin" && requested.name.startsWith("kotlin-stdlib")) {
+            useVersion("1.9.24")
+        }
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.06.00")
     implementation(composeBom)
@@ -138,8 +148,8 @@ dependencies {
     implementation("androidx.media3:media3-effect:1.3.1")
     implementation("com.google.guava:guava:33.2.1-android")      // Step 80: ImmutableList for the text overlay (Media3 asks for it)
 
-    // Step 41: Start.io (official Android SDK, native ads). Replaces AdMob (v0.82.0). "5.+" is the form Start.io documents.
-    implementation("com.startapp:inapp-sdk:5.+")
+    // Step 41: Start.io (official Android SDK, native ads). Replaces AdMob (v0.82.0). Pinned to 5.3.1 (the floating "5.+" pulled a Kotlin 2.4 library that this project's Kotlin 1.9.24 cannot read).
+    implementation("com.startapp:inapp-sdk:5.3.1")
 
     // Backend calls + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
