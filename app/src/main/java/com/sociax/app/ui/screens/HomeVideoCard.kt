@@ -267,8 +267,6 @@ fun HomeVideoCard(
     val context = LocalContext.current
     val openProfile = LocalOpenProfile.current
     var menu by remember { mutableStateOf(false) }
-    var expanded by remember(v.id) { mutableStateOf(false) }
-    var captionCut by remember(v.id) { mutableStateOf(false) }
     var muted by remember(v.id) { mutableStateOf(true) }
     var failed by remember(v.id) { mutableStateOf(false) }
     var playerOn by remember(v.id) { mutableStateOf(false) }
@@ -382,21 +380,10 @@ fun HomeVideoCard(
                 }
             }
 
-            // the caption: two lines, then "more"
+            // Step 84: the same caption behaviour as a photo post (a few lines, "See more" / "See less"); the video above stays the main thing
             if (v.caption.isNotBlank()) {
                 Spacer(Modifier.height(10.dp))
-                Text(
-                    v.caption, color = Ink, fontSize = 14.sp,
-                    maxLines = if (expanded) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { if (!expanded) captionCut = it.hasVisualOverflow }
-                )
-                if (captionCut || expanded) {
-                    Text(
-                        if (expanded) tr("show_less") else tr("read_more"),
-                        color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                        modifier = Modifier.clickable { expanded = !expanded }
-                    )
-                }
+                ExpandableCaption(v.caption, "v${v.id}", previewLines = 3)
             }
 
             // ♥ 💬 ➤                                  🔖

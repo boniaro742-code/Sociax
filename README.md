@@ -1,6 +1,6 @@
 # Sociax
 
-Android (Kotlin + Jetpack Compose) + FastAPI backend, built from the Sociax Master Plan (now v4.0.3; Step 81 added cutting parts out of a video; Step 80 added text on the video; Step 79 added video speed (0.25x-4x) to the video editor; Step 78 added the video editor screen (trim, filters, adjust, crop, turn); Step 77 added the native C++ video-editing engine core; Step 76 added the photo editor; v3.9.5 / v3.9.6 five buttons + AI Hub are done in Step 58; v3.2 + v3.3 replaced the older pricing and media details, v3.9.1 removed the Short Video duration limit, v3.9.2 made accounts and data persistent).
+Android (Kotlin + Jetpack Compose) + FastAPI backend, built from the Sociax Master Plan (now v5.2.1; Step 84 added long captions with See more / See less; Step 83 added the one Create (+) screen; Step 82 added the five-button bar in the v5 order + full-screen Short Video / AI / Chat / Profile; Step 81 added cutting parts out of a video; Step 80 added text on the video; Step 79 added video speed (0.25x-4x) to the video editor; Step 78 added the video editor screen (trim, filters, adjust, crop, turn); Step 77 added the native C++ video-editing engine core; Step 76 added the photo editor; v3.9.5 / v3.9.6 five buttons + AI Hub are done in Step 58; v3.2 + v3.3 replaced the older pricing and media details, v3.9.1 removed the Short Video duration limit, v3.9.2 made accounts and data persistent).
 
 ## Step 1 setup: Google login (Firebase)
 1. Firebase Console: create a project, add Android app with package `com.sociax.app`.
@@ -800,3 +800,37 @@ The visibility logic lives in `backend/main.py` (`VISIBLE`). Run the server, cre
   2. Render persistent disk: needs a PAID web instance (from about $7/month) + disk about $0.25 per GB / month. No code change (set the database path to the disk mount).
   3. Managed PostgreSQL: Render's FREE Postgres is deleted 30 days after creation (not for real users); paid Render Postgres starts around $6/month; Neon / Prisma Postgres keep a free database with no time limit (1-2 GB). This needs a code change: `backend/main.py` talks to SQLite directly (about 3,700 lines), so it is a separate, careful step.
   My advice for ~100 users / day: stay on option 1 now and run the proof above; choose 2 (smallest change) as soon as real money / real users depend on the data. Tell me which one and I will do it as the next step.
+
+## v0.83.0 - Step 82 (plan v5.0.0 sections 2 and 3): five buttons in the new order + full-screen destinations
+Plan v5.0.0 implementation order, item 2 ("five-button navigation and Profile/Bio consolidation, then full-screen destination behavior and reliable Back handling").
+What changed (source level; the APK could not be built here, see "NOT proven"):
+- **Bottom bar = exactly Home, Short Video, AI, Chat, Profile** (Profile is the fifth / rightmost). Before: Home, Profile, Short Video, Chat, AI. "Bio" is no longer a name anywhere (`Tab.Bio` -> `Tab.Profile`, string key `tab_bio` -> `tab_profile`; same words in all 5 languages).
+- **The bar is shown on Home only.** Short Video, AI, Chat and Profile use the whole screen. Pages give the bar's space back (`LocalBottomBarShown` + `bottomBarClearance()` in `Theme.kt`).
+- **Top Back arrow** on Short Video, AI, Chat and Profile; it goes to Home. The Short Video "+" (upload) moved from the left to the right, next to refresh / search, so nothing was lost.
+- **Phone Back** on those four goes to Home (while the keyboard is open it only closes the keyboard, as before). Home is never "trapped": Back on Home leaves the app as before. Pages opened on top (comments, a chat, Settings ...) still go back to the tab they came from.
+- **Home scroll position** is kept (it already lived in `HomeFeedState`), so coming back from a full-screen destination shows the same place.
+- `tools/check_android_sources.py` now checks: the new tab order, no `Bio`, the bar only on Home, Back to Home on all four, the Short Video Back arrow.
+- Run: `python3 tools/check_android_sources.py` (passes).
+- **NOT proven here:** no Android SDK / internet, so the APK was not built or run. Run the GitHub build; if Gradle prints an error send its first red line. Then test on a phone: Home -> each of the 4 buttons -> top Back and phone Back return to Home at the same scroll place; open Settings from Profile / AI and come back; open a chat and come back; light and dark mode.
+- NEXT (plan v5.0.0 order): Step 83 = one Create (+) in the Home header with the unified Take Photo / Record Video / Choose from Gallery flow.
+
+## v0.84.0 - Step 83 (plan v5.0.0 section 5): ONE Create (+) with Take Photo / Record Video / Choose from Gallery
+Plan v5.0.0 implementation order, item 3.
+- The "+" in the Home header (and the "+" on the Short Video page) opens ONE screen, `CreateHubScreen.kt`, with three choices: **Take Photo**, **Record Video**, **Choose from Gallery**. No separate photo-upload / video-upload buttons any more.
+- Nothing is asked before a choice is made. Take Photo / Record Video open the phone's own camera app (it asks for its own camera / microphone permission; Sociax does not add a permission). Choose from Gallery uses the system picker (photos AND videos, no storage permission).
+- **Photo or video is detected by the file itself** (`image/*` or `video/*`): a photo goes on to the existing Photo Editor + post screen, a video to the existing Video Editor + Short Video screen. Caption, audience, quota, retry-without-duplicate and the explicit Publish button are the same as before; nothing is published from the Create screen.
+- Back: from the photo / video screen it returns to the Create screen (phone Back and the top arrow); from the Create screen it returns to where "+" was tapped.
+- A camera that cannot be opened (no camera app) or a file that is neither photo nor video shows a clear message, never a crash.
+- 8 new texts in all 5 languages. `tools/check_android_sources.py` now checks the Create screen, both "+" buttons and the hand-over to the two flows (passes).
+- **NOT proven here:** no Android SDK / internet, so not built or run. Test on a phone: "+" on Home -> each of the 3 choices -> editor -> post; "+" on Short Video; Back at every step; a phone without a camera app; light / dark.
+- NEXT (plan v5.0.0 order): Step 84 = Home video cards media-first (tap opens that exact video, Home position kept) and long photo captions with More / See less.
+
+## v0.85.0 - Step 84 (plan v5.0.0 sections 4 and 6): long captions "See more / See less" + media-first Home video
+Plan v5.0.0 implementation order, items 4 and 5.
+- **Long photo captions.** New shared `ExpandableCaption.kt`: a caption shows at most 4 lines (3 under a video) and a clearly visible **See more**; See more opens the whole text in place, **See less** closes it. Line breaks, paragraphs and emojis are shown as written. The stored caption is never shortened (the server limit of 2200 characters is unchanged; the preview is display only). The open / closed choice stays with the post while you scroll.
+- **Familiar layout.** On Home the photo caption now sits ABOVE the photo (author line, caption, photo, then Like / Comment / Share). Opening or closing a caption only changes that one row; it never covers the photo or the buttons.
+- **Post detail page.** The comments page of a photo post (and of a video) now starts with the author and the caption, with the same See more / See less. A very long caption scrolls inside its own box (max 260 dp) so the comments stay reachable.
+- **Home video cards** (Step 75 already made the tap open THAT exact video full screen and keep the Home position; double tap = like; the card is the video, author line and actions only): the caption under a video uses the same component. The Short Video full-screen caption text changed from "Read more / Show less" to "See more / See less" in all 5 languages.
+- `tools/check_android_sources.py` checks all of this (passes).
+- **NOT proven here:** not built or run (no Android SDK / internet). Test on a phone: a 10-paragraph caption on Home (preview, See more, See less, scroll position stays), the same post's comments page, a video card caption, tap a video -> full screen -> Back = same Home place, light / dark, a big font size in Settings.
+- NEXT (plan v5.0.0 order): Step 85 = first-time guided tour (shown once after onboarding, Skip / Next / Back / Finish, never repeats).

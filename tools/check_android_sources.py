@@ -15,7 +15,7 @@
      (not a bare `currentUser` read); a 401 gets one fresh token before it is believed; the session is observed; coming back online
      re-runs the start-up decision; onboarding is shown ONLY when the server says "no profile" (one place), a 409 "already onboarded"
      counts as success; start-up never writes profile fields; `signOut()` is called in exactly three reviewed places.
-  9. (Step 58, plan v3.9.5 / v3.9.6) EXACTLY five bottom tabs Home, Bio, Short Video, Chat, AI (in that order); the AI tab opens the AI Hub;
+  9. (Step 58, plan v3.9.5 / v3.9.6) EXACTLY five bottom tabs Home, Short Video, AI, Chat, Profile (in that order since Step 82, plan v5.0.0 section 2); the AI tab opens the AI Hub;
      the Chat list has no AI card / button / shortcut and AI Chat is opened from the hub only; the tab circles are at least 48 dp,
      named for TalkBack and marked as tabs.
   12. (Step 74, plan v3.10.2 Home Feed Content Mix) Home shows photos AND videos in one feed: HomeScreen uses HomeVideoCard + mixHomeRefs and a
@@ -196,8 +196,45 @@ if "ACCESS_NETWORK_STATE" not in manifest:
 # ---- 9. five tabs; every AI tool behind the AI tab, none in Chat (plan v3.9.5 / v3.9.6) ----
 tab_block = re.search(r"enum class Tab\([^)]*\) \{(.*?)\n\}", mk, re.S)
 tab_rows = re.findall(r'^\s*(\w+)\(Icons\.[\w.]+,\s*Icons\.[\w.]+,\s*"[^"]*",\s*"(\w+)"\)', tab_block.group(1) if tab_block else "", re.M)
-if tab_rows != [("Home", "tab_home"), ("Bio", "tab_bio"), ("Video", "tab_video"), ("Chat", "tab_chat"), ("Ai", "tab_ai")]:
-    problems.append(f"MainActivity.kt: the bottom bar must have exactly Home, Bio, Short Video, Chat, AI in this order (plan v3.9.5); found {tab_rows}")
+if tab_rows != [("Home", "tab_home"), ("Video", "tab_video"), ("Ai", "tab_ai"), ("Chat", "tab_chat"), ("Profile", "tab_profile")]:
+    problems.append(f"MainActivity.kt: the bottom bar must have exactly Home, Short Video, AI, Chat, Profile in this order (plan v5.0.0 section 2); found {tab_rows}")
+# Step 82 (plan v5.0.0 section 3): Short Video / AI / Chat / Profile are FULL-SCREEN (no bottom bar), each with a top Back arrow, and the phone's Back goes to Home.
+if "Tab.Bio" in mk or "tab_bio" in mk:
+    problems.append("MainActivity.kt: Bio is not a separate destination any more; the name is Profile (plan v5.0.0 section 2)")
+if not re.search(r"if \(!tab\.fullScreen\) BottomBar\(", mk) or "val fullScreen: Boolean get() = this != Home" not in mk:
+    problems.append("MainActivity.kt: the bottom bar must be shown on Home ONLY (plan v5.0.0 section 3)")
+if not re.search(r"BackHandler\(enabled = stage == Stage\.Ready && overlay == null && tab\.fullScreen\)", mk) or "LocalBottomBarShown provides !tab.fullScreen" not in mk:
+    problems.append("MainActivity.kt: the phone's Back on a full-screen tab must return to Home, and pages must give the bar's space back (plan v5.0.0 section 3)")
+for _fn, _name in (("ShortVideoScreen(api, shorts", "Short Video"), ("ChatListScreen(api,", "Chat"), ("AiHubScreen(api, aiChat", "AI"), ("BioScreen(me", "Profile")):
+    _i = mk.find(_fn)
+    if _i < 0 or "onBack = { tab = Tab.Home }" not in mk[_i:_i + 1400]:
+        problems.append(f"MainActivity.kt: the {_name} tab needs onBack = {{ tab = Tab.Home }} (top Back arrow, plan v5.0.0 section 3)")
+# Step 83 (plan v5.0.0 section 5): ONE Create entry (Home header "+" and the Short Video "+") -> Take Photo / Record Video / Choose from Gallery; photo or video detected automatically.
+_hub_p = kt_root / "ui/screens/CreateHubScreen.kt"
+_hub = _hub_p.read_text() if _hub_p.exists() else ""
+if not all(k in _hub for k in ('tr("take_photo")', 'tr("record_video")', 'tr("choose_gallery")', "ImageAndVideo", 'startsWith("video/")', 'startsWith("image/")', "TakePicture", "CaptureVideo")):
+    problems.append("CreateHubScreen.kt: the Create screen needs Take Photo, Record Video and Choose from Gallery (image + video picker) and must detect photo / video itself (plan v5.0.0 section 5)")
+if mk.count("onCreate = { overlay = Overlay.Create }") != 2 or "Overlay.NewPost }" in mk or "Overlay.NewShort }" in mk:
+    problems.append("MainActivity.kt: the Home header '+' and the Short Video '+' must both open the ONE Create screen, not a photo-only / video-only upload (plan v5.0.0 section 5)")
+if "initialUri" not in (kt_root / "ui/screens/SocialScreens.kt").read_text() or "initialUri" not in (kt_root / "ui/screens/ShortVideoScreens.kt").read_text():
+    problems.append("the photo and video flows must accept the item chosen in the Create screen (initialUri) (plan v5.0.0 section 5)")
+# Step 84 (plan v5.0.0 sections 4 and 6): long captions = a few lines + "See more" / "See less" (display only), above the photo, also on the post detail page and the video card.
+_hs = (kt_root / "ui/screens/HomeScreen.kt").read_text()
+_ec_p = kt_root / "ui/screens/ExpandableCaption.kt"
+_ec = _ec_p.read_text() if _ec_p.exists() else ""
+if not all(k in _ec for k in ("fun ExpandableCaption", "hasVisualOverflow", 'tr("read_more")', 'tr("show_less")', "Int.MAX_VALUE", "rememberSaveable(key)")):
+    problems.append("ExpandableCaption.kt: the shared caption needs a preview, See more / See less and an in-place expand that keeps its state per post (plan v5.0.0 section 6)")
+_pc = _hs[_hs.find("fun PostCard("):]
+if "ExpandableCaption(p.caption" not in _pc or _pc.find("ExpandableCaption(p.caption") > _pc.find("AsyncImage(p.imageUrl"):
+    problems.append("HomeScreen.kt: the photo post caption must use ExpandableCaption and sit ABOVE the photo (plan v5.0.0 section 6)")
+if "ExpandableCaption(v.caption" not in (kt_root / "ui/screens/HomeVideoCard.kt").read_text():
+    problems.append("HomeVideoCard.kt: the video card caption must use ExpandableCaption (plan v5.0.0 sections 4 and 6)")
+_soc = (kt_root / "ui/screens/SocialScreens.kt").read_text()
+if "PostCaptionHeader(post.username, post.caption" not in _soc or "header()" not in _soc:
+    problems.append("SocialScreens.kt: the post detail (comments) page must show the post's caption with See more / See less (plan v5.0.0 section 6)")
+_sv = (kt_root / "ui/screens/ShortVideoScreens.kt").read_text()
+if "onClose ?: onBack" not in _sv:
+    problems.append("ShortVideoScreens.kt: the Short Video tab must show the Back arrow and call onBack (plan v5.0.0 section 3)")
 if not re.search(r"Tab\.Ai\s*->\s*AiHubScreen\(", mk):
     problems.append("MainActivity.kt: the AI tab must open AiHubScreen (plan v3.9.6 section 3)")
 chat_kt = (kt_root / "ui/screens/ChatScreens.kt").read_text()
@@ -232,7 +269,7 @@ for f in sorted(kt_root.rglob("*.kt")):
     if re.search(r"6C4DF0", f.read_text(), re.I) and f.name != "Theme.kt":
         problems.append(f"{f.name}: the old purple #6C4DF0 is hard-coded; use SociaxPurple / Accent (plan v3.10.2)")
 pv = (kt_root / "ui/screens/ProfileView.kt").read_text()
-if "ProfileHeading(tr(\"tab_bio\")" not in pv or "TopBar(" in pv:
+if "ProfileHeading(tr(\"tab_profile\")" not in pv or "TopBar(" in pv:
     problems.append("ProfileView.kt: another person's profile needs the centered Profile heading (plan v3.10.2, Bio/Profile)")
 if "ProfilePostsTab()" not in (kt_root / "ui/screens/OtherScreens.kt").read_text():
     problems.append("OtherScreens.kt: my Profile page must use the shared Posts tab row (plan v3.10.2, Bio/Profile)")

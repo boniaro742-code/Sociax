@@ -33,7 +33,8 @@ import com.sociax.app.ui.theme.*
 // ---------------- PROFILE (the "Bio" tab, new design) ----------------
 @Composable
 fun BioScreen(me: com.sociax.app.data.Me, onOpenList: (String) -> Unit = {}, onSettings: () -> Unit, onEdit: () -> Unit, onRequests: () -> Unit, onCreateGroup: () -> Unit = {},
-              api: com.sociax.app.data.ApiClient? = null, onOpenPost: (com.sociax.app.data.Post) -> Unit = {}) {
+              api: com.sociax.app.data.ApiClient? = null, onOpenPost: (com.sociax.app.data.Post) -> Unit = {},
+              onBack: (() -> Unit)? = null) {   // Step 82 (plan v5.0.0 section 3): Profile is full-screen, with a Back arrow to Home
     val addBio = tr("add_bio")
     val context = androidx.compose.ui.platform.LocalContext.current
     var myPosts by remember { mutableStateOf<List<com.sociax.app.data.Post>>(emptyList()) }
@@ -46,8 +47,8 @@ fun BioScreen(me: com.sociax.app.data.Me, onOpenList: (String) -> Unit = {}, onS
         horizontalAlignment = Alignment.CenterHorizontally) {
         // header: the title in the middle, Settings on the right
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.size(44.dp))
-            Text(tr("tab_bio"), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+            if (onBack != null) GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack, size = 44) else Spacer(Modifier.size(44.dp))
+            Text(tr("tab_profile"), color = Ink, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
             GlassIconButton(Icons.Outlined.Settings, tr("settings"), onSettings, size = 44)
         }
         Spacer(Modifier.height(14.dp))

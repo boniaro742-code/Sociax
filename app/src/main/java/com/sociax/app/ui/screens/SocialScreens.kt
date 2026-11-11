@@ -58,13 +58,14 @@ internal fun TopBar(title: String, onBack: () -> Unit) {
 
 // ---------------- Create post ----------------
 @Composable
-fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, defaultFollowersOnly: Boolean = false) {
+fun CreatePostScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, defaultFollowersOnly: Boolean = false, initialUri: Uri? = null) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var uri by remember { mutableStateOf<Uri?>(null) }
+    // Step 83 (plan v5.0.0 section 5): a photo taken or chosen in the unified Create screen arrives as initialUri and opens the editor at once
+    var uri by remember { mutableStateOf<Uri?>(initialUri) }
     // Step 76 (plan v3.10.4): choosing a photo opens the Photo Editor; the edits are only a list of choices (the file is never changed)
     var edits by remember { mutableStateOf(PhotoEdits()) }
-    var editing by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(initialUri != null) }
     var caption by remember { mutableStateOf("") }
     var followersOnly by remember { mutableStateOf(defaultFollowersOnly) }
     var busy by remember { mutableStateOf(false) }
@@ -153,7 +154,8 @@ fun CommentsScreen(api: ApiClient, post: Post, onBack: () -> Unit, onChanged: ()
     CommentsScaffold(
         load = { api.comments(post.id) to true },
         send = { api.addComment(post.id, it) },
-        onBack = onBack, onChanged = onChanged, key = "p${post.id}"
+        onBack = onBack, onChanged = onChanged, key = "p${post.id}",
+        header = { PostCaptionHeader(post.username, post.caption, "pd${post.id}") }   // Step 84: the post's own caption on its detail page
     )
 }
 
@@ -162,7 +164,8 @@ fun CommentsScreen(api: ApiClient, post: Post, onBack: () -> Unit, onChanged: ()
 fun CommentsScaffold(
     load: suspend () -> Pair<List<Comment>, Boolean>,
     send: suspend (String) -> Unit,
-    onBack: () -> Unit, onChanged: () -> Unit, key: Any
+    onBack: () -> Unit, onChanged: () -> Unit, key: Any,
+    header: @Composable () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     var comments by remember { mutableStateOf<List<Comment>>(emptyList()) }
@@ -189,6 +192,7 @@ fun CommentsScaffold(
 
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(16.dp)) {
         TopBar(tr("comments"), onBack)
+        header()
         Box(Modifier.weight(1f)) {
             if (loading) CircularProgressIndicator(color = Accent, modifier = Modifier.align(Alignment.Center))
             else if (!allowed) Text(tr("comments_off_video"), color = Ink.copy(.7f))

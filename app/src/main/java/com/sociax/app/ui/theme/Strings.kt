@@ -47,7 +47,7 @@ object Strings {
     private val table: Map<String, List<String>> = mapOf(
         // ---- navigation ----
         "tab_home" to e("Home", "Accueil", "首页", "홈", "Главная"),
-        "tab_bio" to e("Profile", "Profil", "我的", "프로필", "Профиль"),
+        "tab_profile" to e("Profile", "Profil", "我的", "프로필", "Профиль"),
         "tab_video" to e("Short Video", "Vidéos courtes", "短视频", "숏폼", "Короткие видео"),
         "tab_chat" to e("Chat", "Messages", "聊天", "채팅", "Чат"),
         "tab_ai" to e("AI", "IA", "AI", "AI", "ИИ"),
@@ -99,6 +99,14 @@ object Strings {
         "public_acc" to e("Public account", "Compte public", "公开账号", "공개 계정", "Открытый аккаунт"),
         "groups" to e("Groups", "Groupes", "群组", "그룹", "Группы"),
         "create" to e("Create", "Créer", "创建", "만들기", "Создать"),
+        "create_intro" to e("Take a photo, record a video, or choose one from your gallery. Photos and videos are recognised automatically.", "Prenez une photo, filmez une vidéo ou choisissez-en une dans la galerie. Photo et vidéo sont reconnues automatiquement.", "拍照、录制视频，或从相册选择。照片和视频会自动识别。", "사진을 찍거나 영상을 촬영하거나 갤러리에서 선택하세요. 사진과 영상은 자동으로 구분돼요.", "Сделайте фото, снимите видео или выберите из галереи. Фото и видео определяются автоматически."),
+        "take_photo" to e("Take Photo", "Prendre une photo", "拍照", "사진 찍기", "Сделать фото"),
+        "take_photo_sub" to e("Use the camera, then edit and post", "Utilisez l'appareil photo, puis modifiez et publiez", "使用相机，然后编辑并发布", "카메라로 찍고 편집한 뒤 게시해요", "Снимите, отредактируйте и опубликуйте"),
+        "record_video" to e("Record Video", "Filmer une vidéo", "录制视频", "영상 촬영", "Снять видео"),
+        "record_video_sub" to e("Use the camera, then trim, edit and post", "Utilisez la caméra, puis coupez, modifiez et publiez", "使用相机，然后剪辑、编辑并发布", "카메라로 촬영하고 자르기·편집 후 게시해요", "Снимите, обрежьте, отредактируйте и опубликуйте"),
+        "gallery_sub" to e("Pick a photo or a video", "Choisissez une photo ou une vidéo", "选择照片或视频", "사진이나 영상을 선택하세요", "Выберите фото или видео"),
+        "err_camera_open" to e("The camera could not be opened on this phone.", "L'appareil photo n'a pas pu être ouvert sur ce téléphone.", "无法在此手机上打开相机。", "이 휴대폰에서 카메라를 열 수 없어요.", "Не удалось открыть камеру на этом телефоне."),
+        "err_media_type" to e("This file is not a photo or a video.", "Ce fichier n'est ni une photo ni une vidéo.", "此文件不是照片或视频。", "사진이나 영상이 아닌 파일이에요.", "Этот файл не является фото или видео."),
         "add_bio" to e("Add a bio in Edit profile.", "Ajoutez une bio dans Modifier le profil.", "请在“编辑资料”中添加简介。", "프로필 편집에서 소개를 추가하세요.", "Добавьте описание в разделе «Редактировать профиль»."),
 
         // ---- Settings ----
@@ -364,8 +372,8 @@ object Strings {
         "perf_empty" to e("Nothing measured yet. Open the app, pick a photo or a video, then come back.", "Rien n'a encore été mesuré. Utilisez l'application, choisissez une photo ou une vidéo, puis revenez.", "尚无测量数据。请使用应用、选择一张照片或视频后再回来。", "아직 측정된 값이 없어요. 앱을 쓰고 사진이나 영상을 고른 뒤 다시 오세요.", "Пока ничего не измерено. Выберите фото или видео в приложении и вернитесь."),
         "try_again" to e("Try again", "Réessayer", "重试", "다시 시도", "Повторить"),
         "delete_video" to e("Delete video", "Supprimer la vidéo", "删除视频", "영상 삭제", "Удалить видео"),
-        "read_more" to e("Read more", "Voir plus", "展开", "더 보기", "Ещё"),
-        "show_less" to e("Show less", "Voir moins", "收起", "접기", "Свернуть"),
+        "read_more" to e("See more", "Voir plus", "展开", "더 보기", "Ещё"),
+        "show_less" to e("See less", "Voir moins", "收起", "접기", "Свернуть"),
         "delete_post" to e("Delete post", "Supprimer la publication", "删除帖子", "게시물 삭제", "Удалить публикацию"),
         // ---- Step 41: ads (plan v3.8 section 28) ----
         "ad_label" to e("Ad", "Pub", "广告", "광고", "Реклама"),
@@ -416,7 +424,7 @@ object Strings {
         "video_cannot_play" to e("This video cannot be played here. Tap to open it full screen.", "Impossible de lire cette vidéo ici. Touchez pour l'ouvrir en plein écran.", "此处无法播放该视频。点击全屏打开。", "여기서는 이 영상을 재생할 수 없어요. 눌러서 전체 화면으로 여세요.", "Здесь видео не воспроизводится. Нажмите, чтобы открыть на весь экран."),
         "short_unavailable" to e("This video is no longer available.", "Cette vidéo n'est plus disponible.", "此视频已不可用。", "이 영상은 더 이상 볼 수 없어요.", "Это видео больше недоступно."),
         "a11y_open_fullscreen" to e("Open full screen", "Ouvrir en plein écran", "全屏打开", "전체 화면으로 열기", "Открыть на весь экран"),
-        "a11y_new_post" to e("New post", "Nouvelle publication", "发布新帖", "새 게시물", "Новая публикация"),
+        "a11y_new_post" to e("Create", "Créer", "创建", "만들기", "Создать"),
         "a11y_notifications" to e("Notifications", "Notifications", "通知", "알림", "Уведомления"),
         "a11y_messages" to e("Messages", "Messages", "消息", "메시지함", "Сообщения"),
         "a11y_share" to e("Share", "Partager", "分享", "공유", "Поделиться"),

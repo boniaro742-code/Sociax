@@ -42,8 +42,8 @@ android {
         applicationId = "com.sociax.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 83
-        versionName = "0.82.1"
+        versionCode = 86
+        versionName = "0.85.0"
         // Backend URL only. NEVER put AI provider keys in the app.
         // 10.0.2.2 = your computer when using the Android emulator. Use your server URL for a real phone.
         buildConfigField("String", "API_BASE_URL", "\"$apiUrl\"")

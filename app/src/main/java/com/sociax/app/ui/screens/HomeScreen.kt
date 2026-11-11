@@ -293,8 +293,6 @@ internal fun PostAction(icon: androidx.compose.ui.graphics.vector.ImageVector, d
 fun PostCard(p: Post, ctl: PostController, onComments: (Post) -> Unit) {
     val context = LocalContext.current
     var menu by remember { mutableStateOf(false) }
-    var expanded by remember(p.id) { mutableStateOf(false) }
-    var captionCut by remember(p.id) { mutableStateOf(false) }
     val openProfile = LocalOpenProfile.current
 
     GlassPanel(Modifier.fillMaxWidth(), corner = 22, lift = true) {
@@ -341,28 +339,17 @@ fun PostCard(p: Post, ctl: PostController, onComments: (Post) -> Unit) {
                 }
             }
 
+            // Step 84 (plan v5.0.0 section 6): the caption sits ABOVE the photo like a familiar social post, a few lines and "See more" for a long one
+            if (p.caption.isNotBlank()) {
+                Spacer(Modifier.height(10.dp))
+                ExpandableCaption(p.caption, "p${p.id}")
+            }
+
             // the photo
             if (p.imageUrl != null) {
                 Spacer(Modifier.height(10.dp))
                 Box(Modifier.fillMaxWidth().aspectRatio(1.25f).clip(RoundedCornerShape(16.dp)).background(FieldFill)) {
                     AsyncImage(p.imageUrl, p.caption, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                }
-            }
-
-            // the caption: two lines, then "more" (tap again for "less")
-            if (p.caption.isNotBlank()) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    p.caption, color = Ink, fontSize = 14.sp,
-                    maxLines = if (expanded) Int.MAX_VALUE else 2, overflow = TextOverflow.Ellipsis,
-                    onTextLayout = { if (!expanded) captionCut = it.hasVisualOverflow }
-                )
-                if (captionCut || expanded) {
-                    Text(
-                        if (expanded) tr("show_less") else tr("read_more"),
-                        color = Accent, fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
-                        modifier = Modifier.clickable { expanded = !expanded }
-                    )
                 }
             }
 

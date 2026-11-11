@@ -120,9 +120,18 @@ val StoryBackground = Brush.verticalGradient(listOf(Color(0xFF7B5CF5), Color(0xF
 /** Height of the docked bottom tab bar (without the phone's own navigation-bar inset). */
 val BottomBarHeight = 64.dp
 
-/** Space a scrolling page must leave at the bottom so its last item is not hidden by the docked tab bar. */
+/**
+ * Step 82 (plan v5.0.0 section 3): the docked tab bar is shown ONLY on Home. Short Video, AI, Chat and Profile are full-screen, so there
+ * the bar is hidden and its space is given back to the page. MainActivity provides false for those four destinations.
+ */
+val LocalBottomBarShown = compositionLocalOf { true }
+
+/** Space a scrolling page must leave at the bottom: the docked tab bar (Home only) plus the phone's own navigation-bar inset. */
 @Composable
-fun bottomBarClearance(): Dp = BottomBarHeight + 8.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+fun bottomBarClearance(): Dp {
+    val inset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    return if (LocalBottomBarShown.current) BottomBarHeight + 8.dp + inset else 8.dp + inset
+}
 
 private fun darkColors() = darkColorScheme(
     primary = Accent, onPrimary = Color.White,

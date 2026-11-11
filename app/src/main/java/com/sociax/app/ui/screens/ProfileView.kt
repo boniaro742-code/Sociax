@@ -114,7 +114,7 @@ fun UserProfileScreen(api: ApiClient, username: String, onBack: () -> Unit, onOp
 
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally) {
-        ProfileHeading(tr("tab_bio"), onBack) {
+        ProfileHeading(tr("tab_profile"), onBack) {
             // the existing overflow menu (Block), moved from the button row to the heading; same menu, same action
             val pm = profile
             if (pm != null && !pm.isMe && !pm.iBlocked) Box {

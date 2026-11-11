@@ -86,13 +86,18 @@ class MainActivity : ComponentActivity() {
 
 enum class Tab(val icon: ImageVector, val activeIcon: ImageVector, val label: String, val labelKey: String) {
     // outlined icon when idle, filled icon + purple label when selected (new design)
+    // Step 82 (plan v5.0.0 section 2): exactly five buttons in this order: Home, Short Video, AI, Chat, Profile (Profile is the fifth / rightmost).
+    // "Bio" is gone as a name: Bio and Profile are ONE destination.
     Home(Icons.Outlined.Home, Icons.Filled.Home, "Home", "tab_home"),
-    Bio(Icons.Outlined.Person, Icons.Filled.Person, "Profile", "tab_bio"),
     Video(Icons.Outlined.PlayCircle, Icons.Filled.PlayCircle, "Short Video", "tab_video"),
-    Chat(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chat", "tab_chat"),
-    // Step 58 (plan v3.9.5 / v3.9.6): the fifth button. EVERY AI tool lives behind it; Chat has no AI of its own.
+    // Step 58 (plan v3.9.5 / v3.9.6): EVERY AI tool lives behind this button; Chat has no AI of its own.
     // Step 59: the AI tab is the Sociax AI chat itself.
-    Ai(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI", "tab_ai")
+    Ai(Icons.Outlined.AutoAwesome, Icons.Filled.AutoAwesome, "AI", "tab_ai"),
+    Chat(Icons.Outlined.ChatBubbleOutline, Icons.Filled.ChatBubble, "Chat", "tab_chat"),
+    Profile(Icons.Outlined.Person, Icons.Filled.Person, "Profile", "tab_profile");
+
+    /** Plan v5.0.0 section 3: Short Video, AI, Chat and Profile use the whole screen (no bottom bar). Home is the only exception. */
+    val fullScreen: Boolean get() = this != Home
 }
 
 private enum class Stage { Loading, LoggedOut, NeedsOnboarding, Ready }
@@ -101,11 +106,12 @@ private enum class Stage { Loading, LoggedOut, NeedsOnboarding, Ready }
 private sealed interface Overlay {
     data object Settings : Overlay
     data object EditProfile : Overlay
-    data object NewPost : Overlay
+    data class NewPost(val uri: Uri? = null) : Overlay   // Step 83: uri = the photo that was taken / chosen in the Create screen
     data object Search : Overlay
     data object Requests : Overlay
     data object Notifications : Overlay   // Step 27
-    data object NewShort : Overlay
+    data class NewShort(val uri: Uri? = null) : Overlay  // Step 83: uri = the video that was recorded / chosen in the Create screen
+    data object Create : Overlay                         // Step 83 (plan v5.0.0 section 5): the ONE Create entry: Take Photo / Record Video / Choose from Gallery
     data object NewChat : Overlay
     data object NewStory : Overlay
     data class Story(val groups: List<StoryGroup>, val index: Int) : Overlay
@@ -178,11 +184,20 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
             is Overlay.GroupInfo -> Overlay.Conversation(o.chat)       // group info goes back to its chat
             Overlay.Blocked, Overlay.Saved, Overlay.SavedShorts, Overlay.ChangeLock -> Overlay.Settings   // the Settings lists go back to Settings
             is Overlay.Comments -> returnTo.also { returnTo = null }
+            is Overlay.NewPost -> if (o.uri != null) Overlay.Create else null     // Step 83: back from the editor flow to the Create screen
+            is Overlay.NewShort -> if (o.uri != null) Overlay.Create else null
             is Overlay.UserProfile -> o.backTo           // a profile opened from a followers list goes back to that list
             is Overlay.FollowList -> o.backTo
             else -> null
         }
         if (!inHomeVideo) feedKey++
+    }
+
+    // Step 82 (plan v5.0.0 section 3): Short Video, AI, Chat and Profile are full-screen destinations without the bottom bar. The phone's
+    // Back (and their own top Back arrow) returns to Home, where the five-button bar is. While the keyboard is open Back only closes it.
+    BackHandler(enabled = stage == Stage.Ready && overlay == null && tab.fullScreen) {
+        val keyboardUp = ViewCompat.getRootWindowInsets(rootView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        if (keyboardUp) { hideKeyboard(); focusManager.clearFocus() } else tab = Tab.Home
     }
 
     // Decide the starting screen: returning users skip onboarding.
@@ -397,8 +412,8 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
 
     // Step 59: status bar icons: light over the dark video / story, otherwise they follow the theme (dark icons on the light page)
     val mediaScreen = stage == Stage.Ready && ((overlay == null && tab == Tab.Video) || overlay is Overlay.Story || overlay is Overlay.HomeVideo ||
-        (overlay == Overlay.NewPost && PhotoEditorFlag.open) ||   // Step 76: the dark photo editor needs light status-bar icons
-        (overlay == Overlay.NewShort && VideoEditorFlag.open))   // Step 78: so does the dark video editor
+        (overlay is Overlay.NewPost && PhotoEditorFlag.open) ||   // Step 76: the dark photo editor needs light status-bar icons
+        (overlay is Overlay.NewShort && VideoEditorFlag.open))   // Step 78: so does the dark video editor
     LaunchedEffect(dark, mediaScreen) { activity.applySystemBars(dark || mediaScreen) }
 
     // Step 57: Firebase ends the session by itself (account disabled / deleted, revoked elsewhere) -> back to sign-in with a clear message.
@@ -513,11 +528,13 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     Overlay.SavedShorts -> SavedShortsScreen(api, onBack = { overlay = Overlay.Settings })
                     Overlay.Saved -> SavedPostsScreen(api, onBack = { overlay = Overlay.Settings },
                         onOpenPost = { returnTo = Overlay.Saved; overlay = Overlay.Comments(it) })
-                    Overlay.NewPost -> CreatePostScreen(api, onBack = { overlay = null },
+                    Overlay.Create -> CreateHubScreen(onBack = { overlay = null },
+                        onPhoto = { overlay = Overlay.NewPost(it) }, onVideo = { overlay = Overlay.NewShort(it) })
+                    is Overlay.NewPost -> CreatePostScreen(api, onBack = { overlay = if (o.uri != null) Overlay.Create else null },
                         onPosted = {
                             overlay = null; feedKey++
                             scope.launch { runCatching { me = api.me() } }   // refresh post count
-                        }, defaultFollowersOnly = me.defaultAudience == "followers")
+                        }, defaultFollowersOnly = me.defaultAudience == "followers", initialUri = o.uri)
                     Overlay.Search -> SearchScreen(api, onBack = { overlay = null; feedKey++ }, onComments = { overlay = Overlay.Comments(it) })
                     Overlay.Notifications -> NotificationsScreen(api, onBack = { overlay = null; notifUnread = 0 },
                         onRequests = { overlay = Overlay.Requests },
@@ -528,8 +545,8 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                         scope.launch { runCatching { me = api.me() } }
                     })
                     is Overlay.Comments -> CommentsScreen(api, o.post, onBack = { overlay = returnTo; returnTo = null; feedKey++ }, onChanged = {})
-                    Overlay.NewShort -> CreateShortScreen(api, onBack = { overlay = null },
-                        defaultFollowersOnly = me.defaultAudience == "followers",
+                    is Overlay.NewShort -> CreateShortScreen(api, onBack = { overlay = if (o.uri != null) Overlay.Create else null },
+                        defaultFollowersOnly = me.defaultAudience == "followers", initialUri = o.uri,
                         onPosted = { overlay = null; shorts.reset() })   // reload the feed so the new clip shows up
                     is Overlay.ShortComments -> ShortCommentsScreen(api, o.short, onBack = { overlay = o.backTo },
                         onChanged = {
@@ -564,10 +581,12 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     // The tab bar floats ON TOP of the page (like the reference); every tab leaves room for it at its bottom.
                     // Short Video is full-bleed (video behind the status bar and the bar), the other tabs start under the status bar.
                     null -> Box(Modifier.fillMaxSize()) {
+                        // Step 82: pages leave room for the bar only while it is shown (Home); full-screen destinations take the whole screen.
+                        CompositionLocalProvider(LocalBottomBarShown provides !tab.fullScreen) {
                         Box(Modifier.fillMaxSize().then(if (tab == Tab.Video) Modifier else Modifier.statusBarsPadding())) {
                             when (tab) {
                                 Tab.Home -> HomeScreen(api, homeFeed, feedKey,
-                                    onCreate = { overlay = Overlay.NewPost },
+                                    onCreate = { overlay = Overlay.Create },
                                     onSearch = { overlay = Overlay.Search },
                                     onNotifications = { overlay = Overlay.Notifications },
                                     notifUnread = notifUnread,
@@ -580,15 +599,16 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                         homeViewer = homeFeed.makeViewer(v.id)
                                         if (homeViewer != null) overlay = Overlay.HomeVideo(v.id)
                                     })
-                                Tab.Bio -> BioScreen(me,
+                                Tab.Profile -> BioScreen(me,
                                     onOpenList = { kind -> me.username?.let { overlay = Overlay.FollowList(it, kind) } },
                                     onSettings = { overlay = Overlay.Settings },
                                     onEdit = { overlay = Overlay.EditProfile },
                                     onRequests = { overlay = Overlay.Requests },
                                     onCreateGroup = { tab = Tab.Chat; overlay = Overlay.NewGroup },
-                                    api = api, onOpenPost = { overlay = Overlay.Comments(it) })
+                                    api = api, onOpenPost = { overlay = Overlay.Comments(it) },
+                                    onBack = { tab = Tab.Home })
                                 Tab.Video -> ShortVideoScreen(api, shorts, ads,
-                                    onCreate = { overlay = Overlay.NewShort },
+                                    onCreate = { overlay = Overlay.Create },
                                     onSearch = { overlay = Overlay.Search },
                                     onComments = { overlay = Overlay.ShortComments(it) },
                                     onBack = { tab = Tab.Home })
@@ -596,12 +616,15 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                 Tab.Chat -> ChatListScreen(api,
                                     onOpen = { overlay = Overlay.Conversation(it) },
                                     onNewChat = { overlay = Overlay.NewChat },
-                                    onNewGroup = { overlay = Overlay.NewGroup })
+                                    onNewGroup = { overlay = Overlay.NewGroup },
+                                    onBack = { tab = Tab.Home })
                                 // Step 59: the AI tab is the Sociax AI chat (its gear opens Settings).
-                                Tab.Ai -> AiHubScreen(api, aiChat, onSettings = { overlay = Overlay.Settings })
+                                Tab.Ai -> AiHubScreen(api, aiChat, onSettings = { overlay = Overlay.Settings }, onBack = { tab = Tab.Home })
                             }
                         }
-                        BottomBar(tab, chatUnread > 0, Modifier.align(Alignment.BottomCenter)) { tab = it }
+                        }
+                        // Step 82 (plan v5.0.0 section 3): the five-button bar is shown on Home only.
+                        if (!tab.fullScreen) BottomBar(tab, chatUnread > 0, Modifier.align(Alignment.BottomCenter)) { tab = it }
                     }
                 } }
             }
@@ -617,7 +640,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
 }
 
 /**
- * Exactly five primary tabs (Home, Profile, Short Video, Chat, AI) in a white bar docked at the bottom, like the new design: a thin edge
+ * Exactly five primary tabs (Home, Short Video, AI, Chat, Profile) in a white bar docked at the bottom of HOME (the other four are full-screen, plan v5.0.0), like the new design: a thin edge
  * on top, an outlined grey icon with its name under it, and the selected tab in purple (filled icon, bold name). The Chat tab shows a
  * small purple dot while there are unread messages. Every tab is at least 56 dp tall (the Android minimum touch size is 48 dp) and
  * tells TalkBack its name, that it is a tab, and whether it is selected.

@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.outlined.Description
@@ -56,7 +57,7 @@ class AiChatState {
  * (plan v3.9.5 / v3.9.9: do not display unavailable features as if they are working).
  */
 @Composable
-fun AiHubScreen(api: ApiClient, chat: AiChatState, onSettings: () -> Unit) {
+fun AiHubScreen(api: ApiClient, chat: AiChatState, onSettings: () -> Unit, onBack: (() -> Unit)? = null) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var busy by remember { mutableStateOf(false) }
@@ -113,6 +114,8 @@ fun AiHubScreen(api: ApiClient, chat: AiChatState, onSettings: () -> Unit) {
     // leaves room for the docked tab bar.
     Column(Modifier.fillMaxSize().imePadding().padding(bottom = if (keyboardOpen) 0.dp else bottomBarClearance())) {
         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Step 82 (plan v5.0.0 section 3): the AI tab is full-screen; the top Back arrow returns to Home
+            if (onBack != null) { GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack, size = 44); Spacer(Modifier.width(10.dp)) }
             Text(tr("ai_title"), color = Ink, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
             Spacer(Modifier.width(8.dp))
             Icon(Icons.Filled.AutoAwesome, null, tint = Accent, modifier = Modifier.size(22.dp))

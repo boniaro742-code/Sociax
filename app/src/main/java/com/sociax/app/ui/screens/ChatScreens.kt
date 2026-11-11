@@ -61,7 +61,7 @@ private fun ChatAvatar(chat: ChatSummary, size: Int, online: Boolean = false) {
 // Chat tab (new design): "Chats" title, "Active now" row, then plain rows (updates every few seconds)
 // =====================================================================
 @Composable
-fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () -> Unit, onNewGroup: () -> Unit) {
+fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () -> Unit, onNewGroup: () -> Unit, onBack: (() -> Unit)? = null) {
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -93,6 +93,8 @@ fun ChatListScreen(api: ApiClient, onOpen: (ChatSummary) -> Unit, onNewChat: () 
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Step 82 (plan v5.0.0 section 3): Chat is full-screen; the top Back arrow returns to Home
+            if (onBack != null) { GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack, size = 44); Spacer(Modifier.width(10.dp)) }
             Text(tr("tab_chat"), color = Ink, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
             GlassIconButton(Icons.Filled.GroupAdd, tr("new_group"), onNewGroup, size = 44)
             Spacer(Modifier.width(10.dp))

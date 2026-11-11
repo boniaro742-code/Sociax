@@ -385,14 +385,16 @@ fun ShortVideoScreen(
         // (Step 59: there is no "Following" tab: the server has no following-only feed for short videos, so none is shown.)
         Column(Modifier.fillMaxWidth().statusBarsPadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (onClose != null) GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose, size = 40, onMedia = true)   // Step 75: back to Home
-                else GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)
+                // Step 75: the Home player's Back. Step 82 (plan v5.0.0 section 3): the Short Video tab is full-screen and has the same Back arrow to Home
+                GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onClose ?: onBack, size = 40, onMedia = true)
                 Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(tr("for_you"), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                     Box(Modifier.padding(top = 4.dp).width(28.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White))
                 }
                 if (viewer) Spacer(Modifier.size(40.dp))      // keeps "For you" in the middle; no refresh / search here (they would lose the opened video)
                 else {
+                    GlassIconButton(Icons.Filled.Add, tr("a11y_upload_short"), onCreate, size = 40, onMedia = true)   // moved here from the left in Step 82
+                    Spacer(Modifier.width(8.dp))
                     GlassIconButton(Icons.Filled.Refresh, tr("a11y_refresh"), { state.reset() }, size = 40, onMedia = true)   // Step 40: a new ranking
                     Spacer(Modifier.width(8.dp))
                     GlassIconButton(Icons.Filled.Search, tr("search"), onSearch, size = 40, onMedia = true)
@@ -662,7 +664,7 @@ private fun mmss(ms: Long): String {
 }
 
 @Composable
-fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, defaultFollowersOnly: Boolean = false) {
+fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, defaultFollowersOnly: Boolean = false, initialUri: Uri? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = remember { Prefs(context) }
@@ -743,6 +745,8 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
         }
     }
 
+    // Step 83 (plan v5.0.0 section 5): a video recorded or chosen in the unified Create screen arrives as initialUri; it goes the same way a picked one does
+    LaunchedEffect(initialUri) { if (initialUri != null && pickedUri == null && prepared == null) onPicked(initialUri) }
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { u -> if (u != null) onPicked(u) }
     val camera = rememberLauncherForActivityResult(remember { CaptureShort() }) { ok ->
         val u = pendingCamera
@@ -891,7 +895,8 @@ fun ShortCommentsScreen(api: ApiClient, short: ShortVideo, onBack: () -> Unit, o
     CommentsScaffold(
         load = { api.shortComments(short.id) },
         send = { api.addShortComment(short.id, it) },
-        onBack = onBack, onChanged = onChanged, key = "s${short.id}"
+        onBack = onBack, onChanged = onChanged, key = "s${short.id}",
+        header = { PostCaptionHeader(short.username, short.caption, "sd${short.id}") }   // Step 84
     )
 }
 
