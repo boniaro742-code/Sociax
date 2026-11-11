@@ -349,7 +349,7 @@ fun PhotoEditorScreen(uri: Uri, initial: PhotoEdits, onCancel: () -> Unit, onDon
 }
 
 @Composable
-private fun editorSliderColors() = SliderDefaults.colors(
+internal fun editorSliderColors() = SliderDefaults.colors(
     thumbColor = Accent, activeTrackColor = Accent, inactiveTrackColor = Color.White.copy(alpha = 0.25f)
 )
 
@@ -380,7 +380,7 @@ private fun FilterTile(id: String, thumb: ImageBitmap?, selected: Boolean, onCli
 }
 
 @Composable
-private fun AdjustRow(label: String, value: Float, onChange: (Float) -> Unit) {
+internal fun AdjustRow(label: String, value: Float, onChange: (Float) -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = Color.White, fontSize = 13.sp, modifier = Modifier.width(92.dp))
         Slider(
@@ -392,7 +392,7 @@ private fun AdjustRow(label: String, value: Float, onChange: (Float) -> Unit) {
 }
 
 @Composable
-private fun EditorChip(text: String, selected: Boolean, onClick: () -> Unit) {
+internal fun EditorChip(text: String, selected: Boolean, onClick: () -> Unit) {
     Box(
         Modifier.heightIn(min = 48.dp)
             .semantics { this.selected = selected; role = Role.Button }
@@ -408,7 +408,7 @@ private fun EditorChip(text: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun EditorTabButton(icon: ImageVector, label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+internal fun EditorTabButton(icon: ImageVector, label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val tint = if (selected) Accent else Color.White.copy(.7f)
     Column(
         modifier.heightIn(min = 56.dp)

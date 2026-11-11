@@ -17,15 +17,15 @@ val apiUrlGiven: String? = System.getenv("SOCIAX_API_URL")?.trim()?.trimEnd('/')
     ?.let { if (it.startsWith("https://") || it.startsWith("http://")) it else "https://$it" }
 val apiUrl: String = apiUrlGiven ?: "http://10.0.2.2:8000"
 
-// Step 41 (plan v3.8 section 28): AdMob ids. By default Google's public TEST ids are used (they only show test ads and earn nothing).
-// For real ads set the GitHub variables SOCIAX_ADMOB_APP_ID (ca-app-pub-XXXX~YYYY) and SOCIAX_ADMOB_NATIVE_UNIT_ID (ca-app-pub-XXXX/ZZZZ).
-// A wrongly typed id is ignored (test id used) because a bad App ID would crash the app when it starts.
-val admobTestAppId = "ca-app-pub-3940256099942544~3347511713"
-val admobTestNativeUnit = "ca-app-pub-3940256099942544/2247696110"
-val admobAppId: String = System.getenv("SOCIAX_ADMOB_APP_ID")?.trim()
-    ?.takeIf { Regex("^ca-app-pub-[0-9]{16}~[0-9]{10}$").matches(it) } ?: admobTestAppId
-val admobNativeUnit: String = System.getenv("SOCIAX_ADMOB_NATIVE_UNIT_ID")?.trim()
-    ?.takeIf { Regex("^ca-app-pub-[0-9]{16}/[0-9]{10}$").matches(it) } ?: admobTestNativeUnit
+// Step 41 (plan v3.8 section 28), Start.io since v0.82.0: your Start.io App ID (portal.start.io > My Apps > Sociax).
+// The App ID is NOT a secret (every app that shows ads contains it). REAL ads are the default.
+// To use another App ID set the GitHub variable SOCIAX_STARTIO_APP_ID (digits only). A wrongly typed value is ignored.
+// TEST ads (they earn nothing) only when you set SOCIAX_STARTIO_TEST_ADS=1.
+// NEVER tap your own real ads: Start.io can close an account for that.
+val startioDefaultAppId = "210216857"
+val startioAppId: String = System.getenv("SOCIAX_STARTIO_APP_ID")?.trim()
+    ?.takeIf { Regex("^[0-9]{6,12}$").matches(it) } ?: startioDefaultAppId
+val startioTestAds: Boolean = System.getenv("SOCIAX_STARTIO_TEST_ADS")?.trim() == "1"
 
 // Step 65: release signing inputs (all four are needed).
 val releaseKeystore: String? = System.getenv("SOCIAX_RELEASE_KEYSTORE")?.trim()?.takeIf { it.isNotEmpty() }
@@ -35,20 +35,37 @@ val releaseKeyPassword: String? = System.getenv("SOCIAX_RELEASE_KEY_PASSWORD")?.
 
 android {
     namespace = "com.sociax.app"
+    ndkVersion = "27.0.12077973"   // Step 77: the Android NDK for the C++ video engine (CI installs the same version)
     compileSdk = 36   // Step 3 (report v0.67.0, R4): Google Play needs API 36 (Android 16) for new apps and updates since 2026-08-31
 
     defaultConfig {
         applicationId = "com.sociax.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 76
-        versionName = "0.76.0"
+        versionCode = 82
+        versionName = "0.82.0"
         // Backend URL only. NEVER put AI provider keys in the app.
         // 10.0.2.2 = your computer when using the Android emulator. Use your server URL for a real phone.
         buildConfigField("String", "API_BASE_URL", "\"$apiUrl\"")
-        buildConfigField("String", "ADMOB_NATIVE_UNIT_ID", "\"$admobNativeUnit\"")
-        buildConfigField("boolean", "ADMOB_IS_TEST", (admobAppId == admobTestAppId || admobNativeUnit == admobTestNativeUnit).toString())
-        manifestPlaceholders["admobAppId"] = admobAppId
+        buildConfigField("String", "STARTIO_APP_ID", "\"$startioAppId\"")
+        buildConfigField("boolean", "STARTIO_TEST_ADS", startioTestAds.toString())
+
+        // Step 77 (plan v4.0.3 section 5): the native C++ video-editing engine (app/src/main/cpp), built with the Android NDK + CMake
+        // for every ABI listed here. Only the editor loads it; login, Home, chat and notifications never depend on it.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += listOf("-DANDROID_STL=c++_static")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     // DEBUG signing: a FIXED test key (password "android" is the Android default for test keys), so the APK from every GitHub build
@@ -119,10 +136,10 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.3.1")
     implementation("androidx.media3:media3-transformer:1.3.1")
     implementation("androidx.media3:media3-effect:1.3.1")
+    implementation("com.google.guava:guava:33.2.1-android")      // Step 80: ImmutableList for the text overlay (Media3 asks for it)
 
-    // Step 41: AdMob (Google Mobile Ads SDK, native ads) + Google's consent form (UMP) for the EEA / UK
-    implementation("com.google.android.gms:play-services-ads:23.2.0")
-    implementation("com.google.android.ump:user-messaging-platform:2.2.0")
+    // Step 41: Start.io (official Android SDK, native ads). Replaces AdMob (v0.82.0). "5.+" is the form Start.io documents.
+    implementation("com.startapp:inapp-sdk:5.+")
 
     // Backend calls + image loading
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -144,8 +161,8 @@ gradle.taskGraph.whenReady {
         } else if (!rootProject.file(releaseKeystore).exists()) {
             problems += "The release keystore file was not found at: $releaseKeystore"
         }
-        if ((admobAppId == admobTestAppId || admobNativeUnit == admobTestNativeUnit) && System.getenv("SOCIAX_ALLOW_TEST_ADS") != "1") {
-            problems += "AdMob TEST ids are still used (they earn nothing): set SOCIAX_ADMOB_APP_ID and SOCIAX_ADMOB_NATIVE_UNIT_ID (or SOCIAX_ALLOW_TEST_ADS=1 for a test-only release candidate)."
+        if (startioTestAds && System.getenv("SOCIAX_ALLOW_TEST_ADS") != "1") {
+            problems += "Start.io TEST ads are switched on (they earn nothing): remove SOCIAX_STARTIO_TEST_ADS (or set SOCIAX_ALLOW_TEST_ADS=1 for a test-only release candidate)."
         }
         if (problems.isNotEmpty()) {
             throw GradleException("RELEASE BUILD STOPPED:\n - " + problems.joinToString("\n - "))

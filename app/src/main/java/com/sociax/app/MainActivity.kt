@@ -151,7 +151,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     val homeFeed = remember { HomeFeedState() }        // Step 75: the Home rows + scroll position, kept while pages open on top of Home
     var homeViewer by remember { mutableStateOf<ShortsState?>(null) }   // Step 75: the player opened from a Home video (null = none open)
     val aiChat = remember { AiChatState() }            // Step 59: the AI conversation, kept while the person visits other tabs (wiped on log out)
-    val ads = remember { AdsController(api, activity.applicationContext) }   // Step 41: AdMob (Free accounts only, decided by the server)
+    val ads = remember { AdsController(api, activity.applicationContext) }   // Step 41: Start.io ads (Free accounts only, decided by the server)
     // Step 41: every time the Short Video tab is the screen the person is looking at (opened, or back from Settings / a payment),
     // ask the SERVER again who may see ads: a Pro purchase switches ads off at once, a reached cap or a new day is noticed.
     LaunchedEffect(stage, tab, overlay) {
@@ -397,7 +397,8 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
 
     // Step 59: status bar icons: light over the dark video / story, otherwise they follow the theme (dark icons on the light page)
     val mediaScreen = stage == Stage.Ready && ((overlay == null && tab == Tab.Video) || overlay is Overlay.Story || overlay is Overlay.HomeVideo ||
-        (overlay == Overlay.NewPost && PhotoEditorFlag.open))   // Step 76: the dark photo editor needs light status-bar icons
+        (overlay == Overlay.NewPost && PhotoEditorFlag.open) ||   // Step 76: the dark photo editor needs light status-bar icons
+        (overlay == Overlay.NewShort && VideoEditorFlag.open))   // Step 78: so does the dark video editor
     LaunchedEffect(dark, mediaScreen) { activity.applySystemBars(dark || mediaScreen) }
 
     // Step 57: Firebase ends the session by itself (account disabled / deleted, revoked elsewhere) -> back to sign-in with a clear message.

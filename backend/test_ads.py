@@ -1,4 +1,4 @@
-"""Step 41 (plan v3.8 section 28): AdMob rules kept by the SERVER: Free only, at most 20 COUNTED impressions per day,
+"""Step 41 (plan v3.8 section 28): ad rules kept by the SERVER: Free only, at most 20 COUNTED impressions per day,
 idempotent counting, Pro sees no ads, reset at the app-defined day, minors flagged, account deletion clears the counter.
 Run:  cd backend && DEV_AUTH=1 python test_ads.py"""
 import os, tempfile, time
@@ -112,7 +112,7 @@ with closing(m.db()) as con:
 assert status(C)["pro"] is False and status(C)["eligible"] is True
 ok("when the paid time ends, ads are allowed again")
 
-# ---- 10. minors are flagged so the phone asks AdMob for child-safe treatment
+# ---- 10. minors are flagged so the phone requests no ad
 assert status(KID)["minor"] is True and status(A)["minor"] is False
 ok("an account under 18 is flagged (minor: true)")
 
@@ -139,7 +139,7 @@ with closing(m.db()) as con:
     assert con.execute("SELECT COUNT(*) FROM ad_impressions WHERE uid=?", (A,)).fetchone()[0] == 0
 ok("account deletion removes the ad counter rows")
 
-# ---- 14. no AdMob secret or ad content is stored on the server
+# ---- 14. no ad-network secret or ad content is stored on the server
 with closing(m.db()) as con:
     cols = [r[1] for r in con.execute("PRAGMA table_info(ad_impressions)")]
 assert cols == ["id", "uid", "day", "idem_key", "created_at"], cols

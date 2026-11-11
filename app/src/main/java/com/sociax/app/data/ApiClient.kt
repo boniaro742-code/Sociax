@@ -346,7 +346,7 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
         }
     }
 
-    // ---- Step 41 (plan v3.8 section 28): AdMob. The SERVER decides who may see ads and counts impressions (max 20 per day, Free only). ----
+    // ---- Step 41 (plan v3.8 section 28): Start.io ads. The SERVER decides who may see ads and counts impressions (max 20 per day, Free only). ----
     private fun adsFrom(o: JSONObject) = AdsStatus(
         eligible = o.optBoolean("eligible", false), pro = o.optBoolean("pro", false),
         dailyCap = o.optInt("daily_cap", 20), used = o.optInt("used", 0), remaining = o.optInt("remaining", 0),

@@ -141,7 +141,7 @@ suspend fun videoDurationAny(context: Context, uri: Uri): Long {
 }
 
 /** Width x height as the person sees it (rotation applied). (0, 0) if unknown. */
-private fun videoDisplaySize(context: Context, uri: Uri): Pair<Int, Int> {
+internal fun videoDisplaySize(context: Context, uri: Uri): Pair<Int, Int> {
     val r = MediaMetadataRetriever()
     return try {
         r.setDataSource(context, uri)

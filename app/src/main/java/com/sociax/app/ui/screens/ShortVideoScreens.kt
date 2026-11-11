@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import android.provider.MediaStore
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -111,12 +112,11 @@ class ShortsState {
 
     fun addAd(afterVideoId: Long, ad: LoadedAd) { adSlots.add(AdSlot(++adCounter, afterVideoId, ad)) }
 
-    fun clearAds() { adSlots.forEach { it.ad.ad.destroy() }; adSlots.clear(); seenSinceAd.clear(); nextGap = 3 }
+    fun clearAds() { adSlots.clear(); seenSinceAd.clear(); nextGap = 3 }
 
     /** Ads are no longer allowed (Pro, cap reached): remove the ad pages the person has not seen yet. [keepAfter] = the one on screen. */
     fun dropUnseenAds(keepAfter: Long?) {
         val gone = adSlots.filter { !it.ad.impressed && it.afterVideoId != keepAfter }
-        gone.forEach { it.ad.ad.destroy() }
         adSlots.removeAll(gone.toSet())
     }
 
@@ -353,7 +353,7 @@ fun ShortVideoScreen(
             VerticalPager(pager, Modifier.fillMaxSize(), key = { state.slots().getOrNull(it)?.key ?: it }) { i ->
                 when (val slot = state.slots().getOrNull(i)) {
                     null -> return@VerticalPager
-                    is FeedSlot.Ad -> AdPage(slot.slot.ad)
+                    is FeedSlot.Ad -> AdPage(slot.slot.ad, active = pager.currentPage == i, onSeen = { ads.markSeen(slot.slot.ad.key) })
                     is FeedSlot.Video -> {
                         val s = slot.item
                         ShortPage(
@@ -642,9 +642,10 @@ private fun ClipPreview(uri: Uri, startMs: Long, endMs: Long?, modifier: Modifie
 // =====================================================================
 // Create a short: pick / record -> compress -> preview -> publish
 // Plan v3.9.1: there is NO duration limit and the length is never required. The video is never trimmed or shortened
-// by the app; the only checks are file size, file type, login and the daily media quota (all on the server).
+// by the app UNLESS the person chooses it in the video editor (Step 78): skipping the editor keeps the exact old path.
+// The only checks are file size, file type, login and the daily media quota (all on the server).
 // =====================================================================
-private enum class CStage { Pick, Working, Preview, Uploading }
+private enum class CStage { Pick, Working, Edit, Preview, Uploading }
 
 private class CaptureShort : ActivityResultContract<Uri, Boolean>() {
     override fun createIntent(context: Context, input: Uri): Intent =
@@ -674,6 +675,11 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
     var commentsOn by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     val errRead = tr("err_read_video")
+    val errEdit = tr("err_video_edit")
+    // Step 78: the picked video, what was read from it and what the person chose in the editor (kept while they go back and forth)
+    var pickedUri by remember { mutableStateOf<Uri?>(null) }
+    var source by remember { mutableStateOf<VideoSource?>(null) }
+    var edits by remember { mutableStateOf(VideoEdits()) }
     var pendingCamera by remember { mutableStateOf<Uri?>(null) }
     var job by remember { mutableStateOf<Job?>(null) }
     // Step 35: a clip already uploaded to Cloudinary (prepared file path -> public id): "try again" re-sends only the record
@@ -704,8 +710,38 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
         stage = CStage.Preview
     }
 
-    // Plan v3.9.1: picking a video does NOT read its length first (that read used to block publishing: "Could not read the video length").
-    fun onPicked(uri: Uri) = launchStep { prepare(uri) }
+    /** Step 78: the edited video: trim / turn / crop / filter by Media3 + the native engine, checked before it is accepted. The edits stay on a failure. */
+    suspend fun prepareEdited(uri: Uri, s: VideoSource, e: VideoEdits) {
+        stage = CStage.Working; error = null
+        prepared?.delete(); prepared = null
+        try {
+            prepared = exportEdited(context, uri, e, s, prefs.uploadQuality)
+        } catch (ex: CancellationException) {
+            throw ex
+        } catch (ex: Exception) {
+            // the original is untouched and the edits are kept: the person can change them and try again, or go back and post without editing
+            Log.w("SociaxVideoEdit", "edited export failed (${ex.javaClass.simpleName})")
+            error = errEdit; stage = CStage.Edit
+            return
+        }
+        val f = prepared!!
+        preparedMs = withContext(Dispatchers.IO) { try { videoDurationMs(context, Uri.fromFile(f)) } catch (ex: Exception) { 0L } }.coerceAtLeast(0L)
+        stage = CStage.Preview
+    }
+
+    // Plan v3.9.1: picking a video does NOT block on its length. Step 78: when size and length ARE readable the editor opens first;
+    // when they are not, the video goes straight on exactly as before (the editor is never a gate).
+    fun onPicked(uri: Uri) = launchStep {
+        stage = CStage.Working; error = null
+        val s = try { readVideoSource(context, uri) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+        if (s == null) {
+            pickedUri = null; source = null
+            prepare(uri)
+        } else {
+            pickedUri = uri; source = s; edits = VideoEdits()
+            stage = CStage.Edit
+        }
+    }
 
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { u -> if (u != null) onPicked(u) }
     val camera = rememberLauncherForActivityResult(remember { CaptureShort() }) { ok ->
@@ -740,12 +776,14 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
     }
 
     // Back: step back inside this flow first; leave only from the first step.
-    BackHandler(enabled = stage != CStage.Pick) {
+    // (the editor stage has its own back handling and its own "discard edits?" question)
+    BackHandler(enabled = stage != CStage.Pick && stage != CStage.Edit) {
         job?.cancel()
         if (stage == CStage.Preview) { prepared?.delete(); prepared = null }
-        stage = CStage.Pick
+        stage = if (stage != CStage.Uploading && source != null) CStage.Edit else CStage.Pick
     }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         TopBar(tr("new_short"), onBack)
 
@@ -779,6 +817,8 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                 Text(trf("quality_line", when (prefs.uploadQuality) { "low" -> tr("ql_low"); "high" -> tr("ql_high"); else -> tr("ql_std") }), color = Ink.copy(.55f), fontSize = 12.sp)
             }
 
+            CStage.Edit -> Unit      // drawn on top of this column below (full screen, dark)
+
             CStage.Working, CStage.Uploading -> {
                 Column(Modifier.fillMaxWidth().padding(top = 80.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(color = Accent)
@@ -786,7 +826,7 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                     Text(if (stage == CStage.Working) tr("preparing") else tr("uploading"),
                         color = Ink)
                     Spacer(Modifier.height(20.dp))
-                    PillButton(tr("cancel"), { job?.cancel(); if (stage == CStage.Uploading) stage = CStage.Preview else stage = CStage.Pick }, filled = false)
+                    PillButton(tr("cancel"), { job?.cancel(); stage = if (stage == CStage.Uploading) CStage.Preview else if (source != null) CStage.Edit else CStage.Pick }, filled = false)
                 }
             }
 
@@ -821,11 +861,26 @@ fun CreateShortScreen(api: ApiClient, onBack: () -> Unit, onPosted: () -> Unit, 
                 Spacer(Modifier.height(18.dp))
                 PillButton(tr("publish"), { publish() }, Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
-                PillButton(tr("choose_another"), { prepared?.delete(); prepared = null; stage = CStage.Pick },
+                PillButton(tr("choose_another"), { prepared?.delete(); prepared = null; source = null; pickedUri = null; stage = CStage.Pick },
                     Modifier.fillMaxWidth(), filled = false)
             }
         }
     }
+
+    // Step 78: the video editor (full screen, dark) over the page while stage is Edit
+    val editUri = pickedUri
+    val editSource = source
+    if (stage == CStage.Edit && editUri != null && editSource != null) {
+        VideoEditorScreen(
+            editUri, editSource, edits, error,
+            onCancel = { source = null; pickedUri = null; error = null; stage = CStage.Pick },
+            onDone = { e ->
+                edits = e
+                launchStep { if (e.isDefault) prepare(editUri) else prepareEdited(editUri, editSource, e) }
+            }
+        )
+    }
+    }   // Box
 }
 
 // =====================================================================

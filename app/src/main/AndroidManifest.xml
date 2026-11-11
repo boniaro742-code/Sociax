@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Step 41 (Start.io): the Android advertising id, so ads are matched and counted. Google Play asks for this permission on Android 13+. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" />
     <!-- Step 57 (plan v3.10.0): only to learn that the network is back, so a signed-in person who started the app offline is taken to Home by itself. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Daily alarms (plan v3.3): they need NO internet. Notifications permission is asked only when the user turns alarms On. -->
@@ -24,10 +27,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Sociax">
-        <!-- Step 41: AdMob App ID (Google's TEST id unless the build sets SOCIAX_ADMOB_APP_ID). Required: without it the Ads SDK crashes. -->
-        <meta-data
-            android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="${admobAppId}" />
+        <!-- Step 41 (Start.io): the SDK is started by the app itself (data/Ads.kt), and ONLY for Free accounts, so its automatic start-up is removed.
+             The App ID is given in code (BuildConfig.STARTIO_APP_ID, set in app/build.gradle.kts). -->
+        <provider
+            android:name="com.startapp.sdk.adsbase.StartAppInitProvider"
+            android:authorities="${applicationId}.startappinitprovider"
+            tools:node="remove" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

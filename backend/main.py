@@ -29,7 +29,7 @@ import metrics  # Step 47: how long requests take / how often they fail (route p
 import ai_create  # Step 55 (plan v3.2 / v3.9): AI Create = generate -> preview -> explicit Yes / No
 import durable  # Step 54 (plan v3.9.2): the database survives restarts / deploys (snapshot backup + restore)
 
-API_VERSION = "0.76.0"
+API_VERSION = "0.82.0"
 app = FastAPI(title="Sociax API", version=API_VERSION)
 
 # Cloudinary credentials: server-side only (env vars). The Android app never sees the secret.
@@ -378,7 +378,7 @@ def init_db():
                 token TEXT PRIMARY KEY, uid TEXT NOT NULL, kind TEXT NOT NULL,   -- kind 'post' | 'short'
                 ids TEXT NOT NULL, created_at INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS feed_snapshots_uid ON feed_snapshots(uid, created_at);
-            -- Step 41 (plan v3.8 section 28): COUNTED AdMob impressions of Free accounts. One row per impression; the key makes a
+            -- Step 41 (plan v3.8 section 28): COUNTED ad impressions of Free accounts. One row per impression; the key makes a
             -- retry count once. `day` = the app-defined day number (see ad_day()). Nothing about the ad itself is stored.
             CREATE TABLE IF NOT EXISTS ad_impressions(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3656,12 +3656,12 @@ def lock_recovery_confirm(body: LockToken, uid: str = Depends(current_user)):
 
 
 # =====================================================================
-# Step 41 (plan v3.8 section 28): AdMob in the Short Video feed, Free accounts only, at most 20 COUNTED impressions per day.
+# Step 41 (plan v3.8 section 28): Start.io ads in the Short Video feed (AdMob until v0.81.0), Free accounts only, at most 20 COUNTED impressions per day.
 # - GET  /ads/status      : may this account see ads, how many are counted today, how many are left, when the day resets.
-# - POST /ads/impression  : the phone reports an impression that the official AdMob SDK callback (onAdImpression) confirmed.
+# - POST /ads/impression  : the phone reports an impression: the ad page was really on screen (Start.io gives no impression callback to the app).
 #                           The SERVER counts it: once per key, never above the cap, never for Pro. The phone's own counter is never trusted.
 # Pro is decided HERE from the verified payment (is_pro), never from anything the phone says. The ad itself (what is shown, the
-# AdMob unit) is the phone's business; this server only keeps the count and the rules.
+# Start.io ad) is the phone's business; this server only keeps the count and the rules.
 # =====================================================================
 AD_DAILY_CAP = 20                       # plan v3.8 section 28.1: a CAP, not a target
 AD_DAY_OFFSET_MINUTES = int(os.getenv("AD_DAY_UTC_OFFSET_MINUTES", "0"))   # the app-defined day starts at 00:00 UTC + this offset (default 00:00 UTC)
@@ -3702,7 +3702,7 @@ def ads_status(uid: str = Depends(current_user)):
         used = ads_counted_today(con, uid)
         age = con.execute("SELECT age FROM users WHERE uid=?", (uid,)).fetchone()
     out = _ad_status_dict(uid, used, pro)
-    # Under 18: the phone must ask AdMob for child-safe, non-personalised treatment (age is the one given at sign-up).
+    # Under 18: the phone requests NO ad at all (age is the one given at sign-up).
     out["minor"] = bool(age and age["age"] < 18)
     return out
 
