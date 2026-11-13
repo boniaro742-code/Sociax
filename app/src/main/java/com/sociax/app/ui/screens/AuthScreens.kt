@@ -127,6 +127,7 @@ fun OnboardingScreen(
     busy: Boolean, serverError: String?,
     initialName: String = "", initialUsername: String = "", initialAge: String = "",
     onDraft: (name: String, username: String, age: String) -> Unit = { _, _, _ -> },
+    ads: com.sociax.app.data.AdsController? = null,      // v0.86.0: new-account full-screen ad after "Where did you hear about SociaX?"
     onSubmit: (name: String, username: String, age: Int, source: String?) -> Unit
 ) {
     var step by remember { mutableIntStateOf(0) }
@@ -137,11 +138,23 @@ fun OnboardingScreen(
     LaunchedEffect(name, username, age) { onDraft(name, username, age) }
     var source by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // v0.86.0 (plan v3.9.5 section 1): ONE ad, only here, only for a NEW account, never required. The ad is asked for while the person answers
+    // the question (age is already typed: under 18 = no ad), and shown only when it is READY; if not (offline, no fill, blocked) the flow goes on at once.
+    var onboardAd by remember { mutableStateOf<com.sociax.app.data.LoadedAd?>(null) }
+    var adDone by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(step) { if (step == 1 && ads != null && !adDone) ads.refresh(null, localAge = age.toIntOrNull()) }
+    fun answered(s: String?) {
+        source = s
+        val ad = if (!adDone && ads != null && ads.allowed) ads.take() else null
+        adDone = true
+        if (ad != null) onboardAd = ad else step = 2
+    }
     val errName = tr("err_name"); val errUsername = tr("err_username"); val errAge = tr("err_age")
 
     // If the server rejects (e.g. username taken), go back to the first step.
     LaunchedEffect(serverError) { if (serverError != null) { error = serverError; step = 0 } }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding().padding(24.dp).verticalScroll(rememberScrollState())) {   // Step 56: imePadding so the age / username boxes are not hidden by the keyboard
         SociaxLogo(Modifier.align(Alignment.CenterHorizontally), size = 96.dp)
         Spacer(Modifier.height(16.dp))
@@ -168,9 +181,9 @@ fun OnboardingScreen(
             1 -> {
                 Title(tr("heard"))
                 sources.forEach { s ->
-                    PillButton(sourceLabel(s), { source = s; step = 2 }, Modifier.fillMaxWidth().padding(vertical = 4.dp), filled = false)
+                    PillButton(sourceLabel(s), { answered(s) }, Modifier.fillMaxWidth().padding(vertical = 4.dp), filled = false)
                 }
-                PillButton(tr("skip"), { source = null; step = 2 }, Modifier.fillMaxWidth().padding(vertical = 4.dp))
+                PillButton(tr("skip"), { answered(null) }, Modifier.fillMaxWidth().padding(vertical = 4.dp))
             }
             else -> {
                 Title(tr("upgrade_anytime"))
@@ -185,6 +198,10 @@ fun OnboardingScreen(
                 else PillButton(tr("skip_now"), { onSubmit(name.trim(), username, age.toInt(), source) }, Modifier.fillMaxWidth())
             }
         }
+    }
+    onboardAd?.let { ad ->
+        FullScreenAdOverlay(ad, onSeen = { ads?.markSeen(ad.key) }, onClose = { onboardAd = null; step = 2 })
+    }
     }
 }
 

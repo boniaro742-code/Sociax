@@ -114,7 +114,8 @@ ok("when the paid time ends, ads are allowed again")
 
 # ---- 10. minors are flagged so the phone requests no ad
 assert status(KID)["minor"] is True and status(A)["minor"] is False
-ok("an account under 18 is flagged (minor: true)")
+assert status(KID)["reason"] == "minor" and status(A)["reason"] is None      # v0.85.2: the reason says WHY (the phone still blocks minors itself)
+ok("an account under 18 is flagged (minor: true, reason: minor)")
 
 # ---- 11. bad keys are refused (the model and the code both check)
 assert code(m.ads_impression, m.AdImpression.model_construct(idem_key="short"), A) == 422

@@ -63,6 +63,7 @@ data class Me(
     val readReceipts: Boolean = true,           // Step 43: show "Seen" in one-to-one chats (and see other people's)
     val notifications: Map<String, Boolean> = NOTIF_GROUPS.associateWith { true },   // Step 27: which notification groups are on
     val language: String? = null,               // Step 37: app language saved on the account (null = never saved)
+    val tourDone: Boolean = true,               // Step 85: false only for a brand-new account that has not finished / skipped the app tour (older servers: true = never shown)
     val posts: Int = 0,
     val followers: Int = 0,
     val following: Int = 0
@@ -96,6 +97,7 @@ private fun JSONObject.toMe() = Me(
     readReceipts = if (has("read_receipts")) optBoolean("read_receipts") else true,
     notifications = NOTIF_GROUPS.associateWith { g -> optJSONObject("notifications")?.optBoolean(g, true) ?: true },
     language = optString("language").ifEmpty { null },
+    tourDone = if (has("tour_done")) optBoolean("tour_done") else true,
     posts = optInt("posts"), followers = optInt("followers"), following = optInt("following")
 )
 
@@ -220,6 +222,9 @@ class ApiClient(private val tokenProvider: suspend () -> String?) {
             whoCanMessage?.let { put("who_can_message", it) }
             defaultAudience?.let { put("default_audience", it) }
         }).toMe()
+
+    /** Step 85: the first-time app tour was finished or skipped: saved on the account so it never repeats (the server only accepts true). */
+    suspend fun markTourDone(): Me = call("PATCH", "/users/me", JSONObject().put("tour_done", true)).toMe()
 
     /** Step 46: this phone wants push for this account / does not want it any more. */
     suspend fun registerPushToken(token: String) { call("POST", "/push/token", JSONObject().put("token", token)) }

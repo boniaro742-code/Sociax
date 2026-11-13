@@ -72,7 +72,10 @@ data class MessagePage(val messages: List<ChatMessage>, val peerReadId: Long?)
 data class SendResult(val message: ChatMessage, val ai: String?, val followPrompt: String? = null)
 
 data class GroupMember(val username: String, val displayName: String, val avatarUrl: String?, val role: String)
-data class GroupInfo(val id: Long, val name: String, val aiEnabled: Boolean, val myRole: String, val members: List<GroupMember>)
+/** Step 87 (plan v5.0.0 section 9): a group has at most 50 members IN TOTAL (the creator / admins included). The server enforces it; the app only explains it. */
+const val GROUP_MAX_MEMBERS = 50
+
+data class GroupInfo(val id: Long, val name: String, val aiEnabled: Boolean, val myRole: String, val members: List<GroupMember>, val maxMembers: Int = GROUP_MAX_MEMBERS)
 
 data class Comment(val id: Long, val username: String, val avatarUrl: String?, val text: String, val createdAt: Long)
 
@@ -156,6 +159,7 @@ fun JSONObject.toChatMessage() = ChatMessage(
 
 fun JSONObject.toGroupInfo() = GroupInfo(
     id = getLong("id"), name = optString("name"), aiEnabled = optBoolean("ai_enabled"), myRole = optString("my_role", "member"),
+    maxMembers = optInt("max_members", GROUP_MAX_MEMBERS),
     members = getJSONArray("members").mapObjects {
         GroupMember(it.getString("username"), it.optString("display_name"), it.optString("avatar_url").ifEmpty { null }, it.optString("role", "member"))
     }

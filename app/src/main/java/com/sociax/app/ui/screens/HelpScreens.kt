@@ -26,11 +26,12 @@ import kotlinx.coroutines.launch
 private enum class HelpDoc { HELP, TERMS, PRIVACY }
 
 @Composable
-fun HelpLegalSection(api: ApiClient?) {
+fun HelpLegalSection(api: ApiClient?, onReplayTour: () -> Unit = {}) {
     var doc by remember { mutableStateOf<HelpDoc?>(null) }
     var reporting by remember { mutableStateOf(false) }
     Section(tr("help_legal")) {
         NavRow(tr("help")) { doc = HelpDoc.HELP }
+        NavRow(tr("tour_replay")) { onReplayTour() }      // Step 85: the first-time tour can be watched again at any time
         NavRow(tr("report_problem")) { if (api != null) reporting = true }
         NavRow(tr("terms")) { doc = HelpDoc.TERMS }
         NavRow(tr("privacy_policy")) { doc = HelpDoc.PRIVACY }

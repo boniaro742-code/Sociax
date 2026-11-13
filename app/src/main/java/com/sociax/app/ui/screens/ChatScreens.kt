@@ -453,7 +453,12 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                 }
             }
             1 -> {
+                // Step 87: 50 members IN TOTAL, the creator included, so at most 49 other people can be picked (the server refuses a 51st anyway)
+                val full = picked.size >= GROUP_MAX_MEMBERS - 1
                 GlassField(query, { query = it }, tr("search_user"))
+                Spacer(Modifier.height(6.dp))
+                Text(trf("group_limit_note", GROUP_MAX_MEMBERS), color = Ink.copy(.65f), fontSize = 12.sp)
+                if (full) Text(trf("group_full_pick", GROUP_MAX_MEMBERS), color = ErrorRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(10.dp))
                 if (picked.isNotEmpty()) {
                     Text(trf("selected_n", picked.size), color = Accent, fontWeight = FontWeight.Bold)
@@ -467,7 +472,7 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                     Spacer(Modifier.height(10.dp))
                 }
                 hits.filter { h -> picked.none { it.username == h.username } }.forEach { u ->
-                    GlassPanel(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { picked.add(u) }) {
+                    GlassPanel(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable(enabled = !full) { picked.add(u) }) {
                         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(u.avatarUrl, 40)
                             Spacer(Modifier.width(10.dp))
@@ -475,7 +480,7 @@ fun NewGroupScreen(api: ApiClient, onBack: () -> Unit, onCreated: (ChatSummary) 
                                 Text(u.username, color = Ink, fontWeight = FontWeight.Bold)
                                 Text(u.displayName, color = Ink.copy(.7f), fontSize = 12.sp)
                             }
-                            Icon(Icons.Filled.Add, tr("a11y_add"), tint = Accent)
+                            if (!full) Icon(Icons.Filled.Add, tr("a11y_add"), tint = Accent)
                         }
                     }
                 }
@@ -610,7 +615,7 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
 
             // ---- members ----
             Spacer(Modifier.height(16.dp))
-            Text(tr("members"), color = Accent, fontWeight = FontWeight.Bold)
+            Text(tr("members") + " (${g.members.size} / ${g.maxMembers})", color = Accent, fontWeight = FontWeight.Bold)      // Step 87: "members (12 / 50)"
             Spacer(Modifier.height(6.dp))
             g.members.forEach { m ->
                 val isMe = m.username == myUsername
@@ -634,7 +639,11 @@ fun GroupInfoScreen(api: ApiClient, chat: ChatSummary, myUsername: String?, onBa
             }
 
             // ---- add member (owner / admin) ----
-            if (manage) {
+            if (manage && g.members.size >= g.maxMembers) {
+                // Step 87: the group is full: no search box and no Add buttons, only a clear message
+                Spacer(Modifier.height(14.dp))
+                Text(trf("group_full", g.maxMembers), color = ErrorRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            } else if (manage) {
                 Spacer(Modifier.height(14.dp))
                 Text(tr("add_member"), color = Accent, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))

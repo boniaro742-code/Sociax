@@ -27,6 +27,29 @@ val startioAppId: String = System.getenv("SOCIAX_STARTIO_APP_ID")?.trim()
     ?.takeIf { Regex("^[0-9]{6,12}$").matches(it) } ?: startioDefaultAppId
 val startioTestAds: Boolean = System.getenv("SOCIAX_STARTIO_TEST_ADS")?.trim() == "1"
 
+// v0.85.2 (report v0.85.0, P0 / P2): print what this build REALLY uses, so the build log answers "which server, which App ID, test or real ads".
+// (The GitHub step above this one only shows what was typed; an App ID with a typing mistake is ignored here and the built-in one is used.)
+run {
+    val typedAppId = System.getenv("SOCIAX_STARTIO_APP_ID")?.trim()?.takeIf { it.isNotEmpty() }
+    val appIdSource = when {
+        typedAppId == null -> "built-in default"
+        typedAppId == startioAppId -> "from SOCIAX_STARTIO_APP_ID"
+        else -> "built-in default (SOCIAX_STARTIO_APP_ID \"$typedAppId\" is not 6-12 digits and was IGNORED)"
+    }
+    logger.lifecycle("SociaX build config: server = ${apiUrlGiven ?: "NOT SET (debug build falls back to http://10.0.2.2:8000, the emulator only)"}; " +
+        "Start.io App ID = $startioAppId ($appIdSource); Start.io ads = ${if (startioTestAds) "TEST (no income)" else "REAL"}")
+    if (apiUrlGiven == null) {
+        logger.warn("WARNING: SOCIAX_API_URL is not set. A phone cannot reach the emulator address, so /ads/status (and login, feed, chat) cannot work and NO ad will ever start. " +
+            "Deploy the backend, set GitHub variable SOCIAX_API_URL = https://<backend-domain>, check https://<backend-domain>/health, then build again.")
+    }
+    if (typedAppId != null && typedAppId != startioAppId) {
+        logger.warn("WARNING: SOCIAX_STARTIO_APP_ID is not 6-12 digits, so the built-in App ID $startioDefaultAppId is used. Copy the App ID from portal.start.io > My Apps > Sociax.")
+    }
+    if (startioTestAds) {
+        logger.warn("WARNING: SOCIAX_STARTIO_TEST_ADS=1: this build shows Start.io TEST ads only and earns nothing. Remove the variable (or set it to 0) for real ads.")
+    }
+}
+
 // Step 65: release signing inputs (all four are needed).
 val releaseKeystore: String? = System.getenv("SOCIAX_RELEASE_KEYSTORE")?.trim()?.takeIf { it.isNotEmpty() }
 val releaseStorePassword: String? = System.getenv("SOCIAX_RELEASE_STORE_PASSWORD")?.takeIf { it.isNotEmpty() }
@@ -42,8 +65,8 @@ android {
         applicationId = "com.sociax.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 86
-        versionName = "0.85.0"
+        versionCode = 92
+        versionName = "0.89.0"
         // Backend URL only. NEVER put AI provider keys in the app.
         // 10.0.2.2 = your computer when using the Android emulator. Use your server URL for a real phone.
         buildConfigField("String", "API_BASE_URL", "\"$apiUrl\"")

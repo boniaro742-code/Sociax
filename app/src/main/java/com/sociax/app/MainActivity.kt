@@ -1,7 +1,7 @@
 package com.sociax.app
 
-import android.os.Bundle
 import android.net.Uri
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.data.AdsController
+import com.sociax.app.data.LoadedAd
 import com.sociax.app.data.ApiClient
 import com.sociax.app.data.ApiException
 import com.sociax.app.data.AuthRepository
@@ -177,6 +178,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     BackHandler(enabled = overlay != null) {
         val keyboardUp = ViewCompat.getRootWindowInsets(rootView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
         if (keyboardUp) { hideKeyboard(); focusManager.clearFocus(); return@BackHandler }
+        if (overlay == Overlay.Settings && settingsCat.isNotEmpty()) { settingsCat = ""; return@BackHandler }   // Step 86: Back inside a category goes to the ten buttons first
         val o = overlay
         val inHomeVideo = homeViewer != null      // while the Home video (or its comments / a profile opened from it) is open Home is NOT reloaded
         overlay = when (o) {
@@ -343,6 +345,35 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
     val lock = remember { com.sociax.app.data.AppLock(activity) }
     var lockSet by remember { mutableStateOf(lock.isSet) }
     var locked by remember { mutableStateOf(lock.isSet) }
+    // v0.86.0: full-screen ad RIGHT AFTER a correct PIN / pattern (never on top of the keypad, so no tap meant for a digit can hit an ad).
+    // The ad is asked for while the PIN screen is open; if it is not ready when the PIN is accepted, nothing is shown and Home opens at once.
+    var lockAd by remember { mutableStateOf<LoadedAd?>(null) }
+    LaunchedEffect(stage) { if (stage != Stage.Ready) lockAd = null }
+    // Step 85 (plan v5.0.0 section 7): the first-time app tour. Due = a brand-new account (server flag tour_done = false, and this phone has not seen it
+    // either), on Home, after sign-in + onboarding + App Lock set-up and after the full-screen ad. Replay (Settings) opens it at any time.
+    val tourTargets = remember { TourTargets() }
+    var tourOpen by remember { mutableStateOf(false) }
+    // Step 86 (plan v5.0.0 section 8): which of the ten Settings categories is open ("" = the landing). Kept here so that coming back from a Settings
+    // sub-list (Blocked, Saved, Change lock ...) returns to the same category.
+    var settingsCat by remember { mutableStateOf("") }
+    LaunchedEffect(stage) { if (stage != Stage.Ready) settingsCat = "" }
+    val tourReady = stage == Stage.Ready && lockSet && !locked && lockAd == null && tab == Tab.Home && overlay == null
+    LaunchedEffect(stage) { if (stage != Stage.Ready) tourOpen = false }
+    LaunchedEffect(tourReady, me.onboarded, me.tourDone) {
+        if (!tourReady || !me.onboarded || me.tourDone) return@LaunchedEffect
+        if (prefs.tourDone(auth.uid)) {            // finished on this phone but the account copy was not saved yet: save it quietly, never show again
+            runCatching { api.markTourDone() }.onSuccess { me = me.copy(tourDone = true) }
+        } else {
+            delay(700)                             // let Home draw first, so every control has a position
+            tourOpen = true
+        }
+    }
+    val finishTour = {
+        tourOpen = false
+        prefs.markTourDone(auth.uid)
+        if (!me.tourDone) { me = me.copy(tourDone = true); scope.launch { runCatching { api.markTourDone() } } }
+    }
+    LaunchedEffect(stage, locked) { if (stage == Stage.Ready && lockSet && locked && ads.lockAdDue()) ads.refresh(activity) }
     // Step 54 (plan v3.9.2): logging out keeps the lock (it is a setting) but it belongs to ONE account. Someone else signing in on
     // this phone never uses it and never sees anything of the previous account: their lock is cleared and they set their own.
     // Just signed in with Google = the same proof "Forgot PIN" asks for, so the same account is not asked for the PIN a second time.
@@ -436,7 +467,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
             val limit by LimitEvents.current.collectAsState()
             limit?.let { ev ->
                 LimitDialog(ev,
-                    onSeePlans = { LimitEvents.current.value = null; if (stage == Stage.Ready) overlay = Overlay.Settings },
+                    onSeePlans = { LimitEvents.current.value = null; if (stage == Stage.Ready) { settingsCat = "ai"; overlay = Overlay.Settings } },
                     onDismiss = { LimitEvents.current.value = null })
             }
             when {
@@ -462,7 +493,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                 ?: prefs.rememberedAccounts.firstOrNull { it.uid == u }?.let { Triple(it.displayName, it.username.removePrefix("@"), "") }
                         }
                     }
-                    OnboardingScreen(busy, error,
+                    OnboardingScreen(busy, error, ads = ads,
                         initialName = seed?.first.orEmpty(), initialUsername = seed?.second.orEmpty(), initialAge = seed?.third.orEmpty(),
                         onDraft = { n, u, a -> onboardUid?.let { id -> prefs.saveOnboardingDraft(id, n, u, a) } }
                     ) { name, username, age, source ->
@@ -507,9 +538,11 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                         accent = accent, onAccent = { accent = it; prefs.accent = it; Accent = Color(it) },
                         textSize = textSize, onTextSize = { textSize = it; prefs.textSize = it.name },
                         reduceMotion = reduceMotion, onReduceMotion = { reduceMotion = it; prefs.reduceMotion = it },
-                        onBack = { overlay = null }, api = api,
+                        onBack = { overlay = null; settingsCat = "" }, api = api,
+                        category = settingsCat, onCategory = { settingsCat = it },
                         me = me, onMeChanged = { me = it },
                         onEditProfile = { overlay = Overlay.EditProfile },
+                        onReplayTour = { overlay = null; settingsCat = ""; tab = Tab.Home; tourOpen = true },
                         onBlocked = { overlay = Overlay.Blocked },
                         onSaved = { overlay = Overlay.Saved },
                         onSavedShorts = { overlay = Overlay.SavedShorts },
@@ -583,7 +616,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                     // Short Video is full-bleed (video behind the status bar and the bar), the other tabs start under the status bar.
                     null -> Box(Modifier.fillMaxSize()) {
                         // Step 82: pages leave room for the bar only while it is shown (Home); full-screen destinations take the whole screen.
-                        CompositionLocalProvider(LocalBottomBarShown provides !tab.fullScreen) {
+                        CompositionLocalProvider(LocalBottomBarShown provides !tab.fullScreen, LocalTourTargets provides tourTargets) {
                         Box(Modifier.fillMaxSize().then(if (tab == Tab.Video) Modifier else Modifier.statusBarsPadding())) {
                             when (tab) {
                                 Tab.Home -> HomeScreen(api, homeFeed, feedKey,
@@ -602,7 +635,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                     })
                                 Tab.Profile -> BioScreen(me,
                                     onOpenList = { kind -> me.username?.let { overlay = Overlay.FollowList(it, kind) } },
-                                    onSettings = { overlay = Overlay.Settings },
+                                    onSettings = { settingsCat = ""; overlay = Overlay.Settings },
                                     onEdit = { overlay = Overlay.EditProfile },
                                     onRequests = { overlay = Overlay.Requests },
                                     onCreateGroup = { tab = Tab.Chat; overlay = Overlay.NewGroup },
@@ -620,21 +653,27 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
                                     onNewGroup = { overlay = Overlay.NewGroup },
                                     onBack = { tab = Tab.Home })
                                 // Step 59: the AI tab is the Sociax AI chat (its gear opens Settings).
-                                Tab.Ai -> AiHubScreen(api, aiChat, onSettings = { overlay = Overlay.Settings }, onBack = { tab = Tab.Home })
+                                Tab.Ai -> AiHubScreen(api, aiChat, onSettings = { settingsCat = "ai"; overlay = Overlay.Settings }, onBack = { tab = Tab.Home })
                             }
                         }
                         }
                         // Step 82 (plan v5.0.0 section 3): the five-button bar is shown on Home only.
-                        if (!tab.fullScreen) BottomBar(tab, chatUnread > 0, Modifier.align(Alignment.BottomCenter)) { tab = it }
+                        if (!tab.fullScreen) BottomBar(tab, chatUnread > 0, Modifier.align(Alignment.BottomCenter), tourTargets) { tab = it }
                     }
                 } }
             }
             // Covers everything (and blocks touches) while locked or while the lock is not set up yet.
             if (stage == Stage.Ready && (!lockSet || locked)) {
                 LockGate(activity, auth, api, lock, mustSetup = !lockSet,
-                    onUnlocked = { locked = false },
+                    onUnlocked = { locked = false; if (ads.lockAdDue()) lockAd = ads.take() },
                     onSetupDone = { lock.bindOwner(auth.uid); lockSet = true; locked = false })
             }
+            // v0.86.0: the full-screen ad after the PIN (Free + 18+ + not in a consent country + under the daily cap, all decided by ads.allowed)
+            if (stage == Stage.Ready) lockAd?.let { ad ->
+                FullScreenAdOverlay(ad, onSeen = { ads.markSeen(ad.key) }, onClose = { lockAd = null; ads.lockAdClosed() })
+            }
+            // Step 85: the first-time guided tour (never above the lock screen or the ad)
+            if (tourOpen && tourReady) AppTourOverlay(tourTargets, onFinished = finishTour)
         }
       }
     }
@@ -647,7 +686,7 @@ fun SociaxApp(activity: MainActivity, auth: AuthRepository, api: ApiClient) {
  * tells TalkBack its name, that it is a tab, and whether it is selected.
  */
 @Composable
-fun BottomBar(current: Tab, chatDot: Boolean, modifier: Modifier = Modifier, onSelect: (Tab) -> Unit) {
+fun BottomBar(current: Tab, chatDot: Boolean, modifier: Modifier = Modifier, tourTargets: TourTargets? = null, onSelect: (Tab) -> Unit) {
     Column(modifier.fillMaxWidth().background(CardFill)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(Hairline))
         Row(
@@ -659,7 +698,7 @@ fun BottomBar(current: Tab, chatDot: Boolean, modifier: Modifier = Modifier, onS
                 val name = tr(t.labelKey)
                 val tint = if (active) Accent else Ink.copy(alpha = 0.55f)
                 Column(
-                    Modifier.weight(1f).height(BottomBarHeight)
+                    Modifier.weight(1f).height(BottomBarHeight).tourTargetIn(tourTargets, "tab_" + t.name)
                         .semantics { selected = active; contentDescription = name }
                         .clickable(role = Role.Tab) { onSelect(t) },
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center

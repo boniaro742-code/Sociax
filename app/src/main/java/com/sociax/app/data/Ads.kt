@@ -3,6 +3,7 @@ package com.sociax.app.data
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
+import android.util.Log
 import android.telephony.TelephonyManager
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -81,6 +82,20 @@ private fun regionNeedsConsent(ctx: Context): Boolean {
 class AdsController(private val api: ApiClient, private val appContext: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    /**
+     * v0.85.2 (report v0.85.0): WHY no ad is shown right now, in one short word-code, also written to Logcat (tag "SociaxAds").
+     * Examples: "api_url_empty", "status_http_401", "status_failed", "server_not_eligible:pro", "server_not_eligible:cap",
+     * "blocked_minor", "blocked_consent_region", "sdk_init_pending", "no_fill: ...", "ad_ready". It is only a diagnosis: it never
+     * changes who may see ads (the server still decides, and every unknown case still means NO ads).
+     */
+    var lastIssue by mutableStateOf("not_checked_yet")
+        private set
+
+    private fun note(issue: String, warn: Boolean = false) {
+        lastIssue = issue
+        if (warn) Log.w(TAG, issue) else Log.i(TAG, issue)
+    }
+
     /** null = not known (offline, error, signed out) -> no ads. */
     var status by mutableStateOf<AdsStatus?>(null)
         private set
@@ -103,23 +118,57 @@ class AdsController(private val api: ApiClient, private val appContext: Context)
 
     /** Ask the server who may see ads. Called when the Short Video tab opens and when the app comes back. */
     @Suppress("UNUSED_PARAMETER")
-    suspend fun refresh(activity: Activity?) {
+    /** Time when the full-screen ad after the App Lock (PIN) was last closed (0 = not yet in this app start). */
+    private var lastLockAdAt = 0L
+
+    /** v0.86.0: true when a full-screen ad may follow a correct PIN: allowed now AND none was shown in the last 30 minutes (a fresh app start always counts as due). */
+    fun lockAdDue(): Boolean = allowed && (lastLockAdAt == 0L || System.currentTimeMillis() - lastLockAdAt >= LOCK_AD_GAP_MS)
+
+    /** v0.86.0: the person closed the full-screen ad after the PIN: remember the time and prepare the next ad for the feed. */
+    fun lockAdClosed() { lastLockAdAt = System.currentTimeMillis(); ensureLoaded() }
+
+    /**
+     * [localAge] (v0.86.0, new-account onboarding): the server has no age yet for a brand-new account, so the age typed on this phone is used too.
+     * Under 18 (or unknown) = NO ad, exactly like the server's own rule for a saved profile.
+     */
+    suspend fun refresh(activity: Activity?, localAge: Int? = null) {
+        if (BuildConfig.API_BASE_URL.isBlank()) {
+            // A build without SOCIAX_API_URL has no server address: /ads/status can never be asked, so no ad can ever start.
+            status = null; ready = null
+            note("api_url_empty: this build has no server address (set the GitHub variable SOCIAX_API_URL and build again)", warn = true)
+            return
+        }
         try {
             val s = api.adsStatus()
             status = s
-            blockedHere = s.minor || regionNeedsConsent(appContext)
+            val consentRegion = regionNeedsConsent(appContext)
+            blockedHere = s.minor || consentRegion || (localAge != null && localAge < 18)
             lastStatusAt = System.currentTimeMillis()
+            Log.i(TAG, "GET /ads/status ok: eligible=${s.eligible} pro=${s.pro} used=${s.used}/${s.dailyCap} minor=${s.minor} consentRegion=$consentRegion")
             if (!allowed) {                         // Pro, cap reached, minor or consent country: nothing is requested, a waiting ad is thrown away
                 ready = null
+                note(when {
+                    s.minor || (localAge != null && localAge < 18) -> "blocked_minor"
+                    consentRegion -> "blocked_consent_region"
+                    s.pro -> "server_not_eligible:pro"
+                    s.remaining <= 0 -> "server_not_eligible:cap"
+                    else -> "server_not_eligible"
+                })
             } else {
                 start()
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: ApiException) {
+            // Cannot verify (server said no): safe choice = no ads. The code tells what to fix: 401/403 = login / token, 404 = wrong server address, 5xx = server down.
+            status = null
+            ready = null
+            note("status_http_${e.code}: GET /ads/status was refused (${e.message})", warn = true)
         } catch (e: Exception) {
             // Cannot verify (offline / server error): safe choice = no ads
             status = null
             ready = null
+            note("status_failed: ${e.javaClass.simpleName} ${e.message ?: ""}".trim(), warn = true)
         }
     }
 
@@ -130,6 +179,7 @@ class AdsController(private val api: ApiClient, private val appContext: Context)
         if (sdkReady) { ensureLoaded(); return }
         if (starting) return
         starting = true
+        note("sdk_init_pending: starting Start.io (App ID ${BuildConfig.STARTIO_APP_ID}, test ads ${BuildConfig.STARTIO_TEST_ADS})")
         // Real ads by default. Test ads only when the build asks for them (SOCIAX_STARTIO_TEST_ADS=1).
         StartAppSDK.setTestAdsEnabled(BuildConfig.STARTIO_TEST_ADS)
         StartAppSDK.initParams(appContext, BuildConfig.STARTIO_APP_ID)
@@ -137,6 +187,7 @@ class AdsController(private val api: ApiClient, private val appContext: Context)
             .setCallback {
                 scope.launch {
                     sdkReady = true; starting = false
+                    Log.i(TAG, "Start.io SDK initialised")
                     ensureLoaded()
                 }
             }
@@ -158,13 +209,23 @@ class AdsController(private val api: ApiClient, private val appContext: Context)
                 scope.launch {
                     loading = false
                     val details = nativeAd.nativeAds?.firstOrNull()
-                    if (details == null || !allowed) { lastFailAt = System.currentTimeMillis(); return@launch }
+                    if (details == null || !allowed) {
+                        lastFailAt = System.currentTimeMillis()
+                        note("no_fill: onReceiveAd came without an ad (or ads are no longer allowed)", warn = true)
+                        return@launch
+                    }
                     ready = LoadedAd(details, key)
+                    note("ad_ready: onReceiveAd")
                 }
             }
 
             override fun onFailedToReceiveAd(ad: Ad?) {
-                scope.launch { loading = false; lastFailAt = System.currentTimeMillis() }
+                // Start.io gives the reason in ad.errorMessage (no inventory / no fill, wrong App ID, app not approved yet, offline ...).
+                val why = runCatching { ad?.errorMessage }.getOrNull().orEmpty()
+                scope.launch {
+                    loading = false; lastFailAt = System.currentTimeMillis()
+                    note("no_fill: onFailedToReceiveAd $why".trim(), warn = true)
+                }
             }
         })
     }
@@ -207,7 +268,12 @@ class AdsController(private val api: ApiClient, private val appContext: Context)
     fun reset() {
         ready = null
         shown.clear(); countedKeys.clear(); status = null; blockedHere = false; loading = false; lastFailAt = 0L; lastStatusAt = 0L
+        lastIssue = "not_checked_yet"
+        lastLockAdAt = 0L
     }
 
     fun close() { scope.cancel() }
 }
+
+private const val TAG = "SociaxAds"      // Logcat filter: tag:SociaxAds
+private const val LOCK_AD_GAP_MS = 30 * 60 * 1000L      // v0.86.0: the full-screen ad after the PIN comes at most once every 30 minutes

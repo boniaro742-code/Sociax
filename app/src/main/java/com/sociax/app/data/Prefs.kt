@@ -117,5 +117,15 @@ class Prefs(context: Context) {
 
     fun clearOnboardingDraft() = sp.edit().remove("onboarding_draft").apply()
 
-    fun forgetAccount(uid: String) { rememberedAccounts = rememberedAccounts.filter { it.uid != uid } }
+    fun forgetAccount(uid: String) { rememberedAccounts = rememberedAccounts.filter { it.uid != uid }; forgetTour(uid) }
+
+    /** Step 85 (plan v5.0.0 section 7): the on-phone copy of "this account finished / skipped the first-time app tour" (the account itself keeps the main copy). */
+    fun tourDone(uid: String?): Boolean = uid != null && (sp.getStringSet("tour_done_uids", emptySet())?.contains(uid) == true)
+    fun markTourDone(uid: String?) {
+        if (uid == null) return
+        sp.edit().putStringSet("tour_done_uids", (sp.getStringSet("tour_done_uids", emptySet()) ?: emptySet()) + uid).apply()
+    }
+    private fun forgetTour(uid: String) {
+        sp.edit().putStringSet("tour_done_uids", (sp.getStringSet("tour_done_uids", emptySet()) ?: emptySet()) - uid).apply()
+    }
 }

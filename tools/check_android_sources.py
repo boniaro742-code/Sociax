@@ -410,6 +410,112 @@ else:
         if "javac" not in wf_txt or "java -cp /tmp/pm PhotoMathTest" not in wf_txt:
             problems.append("build.yml: CI must compile AND run tools/PhotoMathTest.java (the real filter / crop / EXIF maths)")
 
+# ---- v0.85.2 (report v0.85.0): the ads flow must say WHY no ad is shown (Logcat tag SociaxAds) and must stay safe ----
+ads_kt_txt = (kt_root / "data/Ads.kt").read_text(encoding="utf-8")
+for needle, why in [
+    ('TAG = "SociaxAds"', "Ads.kt: Logcat tag SociaxAds is missing"),
+    ("api_url_empty", "Ads.kt: an empty API_BASE_URL must be reported (api_url_empty)"),
+    ("status_http_", "Ads.kt: a refused /ads/status must be reported with its HTTP code (status_http_<code>)"),
+    ("onFailedToReceiveAd", "Ads.kt: the no-fill callback must still exist"),
+    ("errorMessage", "Ads.kt: the Start.io failure reason (ad.errorMessage) must be logged"),
+    ("blocked_minor", "Ads.kt: the under-18 block must stay (blocked_minor)"),
+]:
+    if needle not in ads_kt_txt:
+        problems.append(why)
+if "blockedHere = s.minor ||" not in ads_kt_txt:
+    problems.append("Ads.kt: the under-18 / consent-region gate (blockedHere = s.minor || ...) must NOT be removed or weakened")
+gradle_txt = pathlib.Path("app/build.gradle.kts").read_text(encoding="utf-8")
+if "SociaX build config:" not in gradle_txt:
+    problems.append("build.gradle.kts: the build log must print the server address, the Start.io App ID and test/real ads (SociaX build config:)")
+
+# ---- v0.86.0: full-screen ad for a NEW account (onboarding) and right after the App Lock PIN; Short Video untouched ----
+ad_scr = (kt_root / "ui/screens/AdScreens.kt").read_text(encoding="utf-8")
+auth_scr = (kt_root / "ui/screens/AuthScreens.kt").read_text(encoding="utf-8")
+main_kt = (kt_root / "MainActivity.kt").read_text(encoding="utf-8")
+for needle, why in [
+    ("fun FullScreenAdOverlay", "AdScreens.kt: FullScreenAdOverlay is missing"),
+    ("BackHandler(onBack = onClose)", "FullScreenAdOverlay: Back must close the ad"),
+    ("clickable(onClick = onClose)", "FullScreenAdOverlay: the visible Close (X) button is missing"),
+    ("delay(800)", "FullScreenAdOverlay: the 0.8 s touch guard on the ad button is missing"),
+    ("tr(\"ad_label\")", "FullScreenAdOverlay: the Ad label is missing"),
+]:
+    if needle not in ad_scr:
+        problems.append(why)
+if "registerViewForInteraction" in ad_scr.split("fun FullScreenAdOverlay", 1)[-1] and "matchParentSize" not in ad_scr.split("fun FullScreenAdOverlay", 1)[-1]:
+    problems.append("FullScreenAdOverlay: only the ad button may be registered for clicks (matchParentSize inside the button box), never the whole screen")
+if "localAge = age.toIntOrNull()" not in auth_scr or "adDone" not in auth_scr:
+    problems.append("AuthScreens.kt: the onboarding ad must use the typed age (localAge) and show once (adDone)")
+if "ads.lockAdDue()" not in main_kt or "FullScreenAdOverlay(ad" not in main_kt:
+    problems.append("MainActivity.kt: the full-screen ad after the PIN (lockAdDue + FullScreenAdOverlay) is missing")
+if "LoginScreen(" in main_kt and "FullScreenAdOverlay" in main_kt.split("stage == Stage.LoggedOut ->", 1)[-1].split("stage == Stage.NeedsOnboarding", 1)[0]:
+    problems.append("MainActivity.kt: NO ad on the login screen itself (only new-account onboarding and after the PIN)")
+sv = (kt_root / "ui/screens/ShortVideoScreens.kt").read_text(encoding="utf-8")
+if "FullScreenAdOverlay" in sv:
+    problems.append("ShortVideoScreens.kt: the Short Video ad placement must stay unchanged (plan v3.9.5)")
+
+# ---- Step 85 (plan v5.0.0 section 7): the first-time guided tour ----
+tour_txt = (kt_root / "ui/screens/TourScreens.kt").read_text(encoding="utf-8")
+main_txt = (kt_root / "MainActivity.kt").read_text(encoding="utf-8")
+for needle, why in [
+    ("BackHandler(onBack = onFinished)", "TourScreens.kt: Android Back must end the tour (it may never trap the person)"),
+    ('tr("skip")', "TourScreens.kt: a Skip button is required"), ('tr("back")', "TourScreens.kt: a Back button is required"),
+    ('"tour_finish"', "TourScreens.kt: a Finish button is required"), ('"next"', "TourScreens.kt: a Next button is required"),
+    ('"tab_Home"', "TourScreens.kt: the tour must explain Home"), ('"tab_Video"', "TourScreens.kt: the tour must explain Short Video"),
+    ('"tab_Ai"', "TourScreens.kt: the tour must explain AI"), ('"tab_Chat"', "TourScreens.kt: the tour must explain Chat"),
+    ('"tab_Profile"', "TourScreens.kt: the tour must explain Profile"), ('"create"', "TourScreens.kt: the tour must explain the single Create (+) button"),
+]:
+    if needle not in tour_txt:
+        problems.append(why)
+for needle, why in [
+    ("prefs.tourDone(auth.uid)", "MainActivity.kt: the tour must not repeat when this phone already saw it (local copy)"),
+    ("me.tourDone", "MainActivity.kt: the tour is due only while the account flag tour_done is false"),
+    ("api.markTourDone()", "MainActivity.kt: finishing / skipping must be saved on the account"),
+    ("onReplayTour", "MainActivity.kt: Settings > Replay app tour is missing"),
+]:
+    if needle not in main_txt:
+        problems.append(why)
+if 'tr("tour_replay")' not in (kt_root / "ui/screens/HelpScreens.kt").read_text(encoding="utf-8"):
+    problems.append("HelpScreens.kt: Replay app tour row is missing in Help")
+be_txt = pathlib.Path("backend/main.py").read_text(encoding="utf-8")
+if "tour_done INTEGER NOT NULL DEFAULT 1" not in be_txt or "language, tour_done) VALUES (?,?,?,?,?,?,?,0)" not in be_txt:
+    problems.append("backend/main.py: existing accounts must get tour_done = 1 (DEFAULT 1) and a NEW account tour_done = 0")
+
+# ---- Step 86 (plan v5.0.0 section 8): Settings = EXACTLY TEN top-level category buttons, each with its own detail screen ----
+other_txt = (kt_root / "ui/screens/OtherScreens.kt").read_text(encoding="utf-8")
+cats = re.findall(r'Triple\("(\w+)", "(cat_\w+)", Icons\.Filled\.\w+\)', other_txt)
+want = ["account", "privacy", "appearance", "language", "notifications", "content", "chat", "ai", "data", "help"]
+if [c[0] for c in cats] != want:
+    problems.append(f"OtherScreens.kt: Settings must have exactly these ten categories in this order (plan v5.0.0 section 8): {want}; found {[c[0] for c in cats]}")
+settings_fn = other_txt[other_txt.index("fun SettingsScreen("):other_txt.index("private fun SettingsCategoryButton(")]
+landing = settings_fn[settings_fn.index("            null -> {"):settings_fn.index('            "account" ->')]
+if "Section(" in landing or "SwitchRow(" in landing or "NavRow(" in landing:
+    problems.append("OtherScreens.kt: the Settings landing must show ONLY the ten category buttons (no individual settings)")
+for fn in ["PlansSection(", "AiSettingsSection(", "AppLockSection(", "DailyAlarmSection(", "PrivacySection(", "ChatSettingsSection(", "NotificationsSection(",
+           "ShortVideoSettings(", "PersonalizationSection(", "DataSettingsSection(", "HelpLegalSection(", "GoogleAccountRow(", "DeleteAccountRow(", "PillButton(tr(\"logout\")"]:
+    if fn not in settings_fn:
+        problems.append(f"OtherScreens.kt: {fn} disappeared from Settings (a setting was lost in the reorganisation)")
+if 'settingsCat = ""; return@BackHandler' not in main_txt:
+    problems.append("MainActivity.kt: Back inside a Settings category must go to the ten buttons first")
+strings_txt = (kt_root / "ui/theme/Strings.kt").read_text(encoding="utf-8")
+for _id, key in cats:
+    if f'"{key}" to e(' not in strings_txt:
+        problems.append(f"Strings.kt: the label {key} is missing")
+
+# ---- Step 87 (plan v5.0.0 section 9): groups have at most 50 members IN TOTAL (creator included), enforced on the server AND explained in the app ----
+if not re.search(r"^GROUP_MAX_MEMBERS = 50\b", be_txt, re.M):
+    problems.append("backend/main.py: GROUP_MAX_MEMBERS must be 50 (total, the creator included; plan v5.0.0 section 9)")
+add_fn = be_txt[be_txt.index("def add_member("):be_txt.index("def remove_member(")]
+if 'con.execute("BEGIN IMMEDIATE")' not in add_fn or "GROUP_MAX_MEMBERS" not in add_fn:
+    problems.append("backend/main.py: add_member must count inside BEGIN IMMEDIATE, so two admins can never exceed 50 together")
+if "len(targets) + 1 > GROUP_MAX_MEMBERS" not in be_txt:
+    problems.append("backend/main.py: create_group must count the creator too (targets + 1 > GROUP_MAX_MEMBERS)")
+models_txt = (kt_root / "data/Models.kt").read_text(encoding="utf-8")
+if "const val GROUP_MAX_MEMBERS = 50" not in models_txt:
+    problems.append("Models.kt: the app limit GROUP_MAX_MEMBERS must be 50")
+chat_txt = (kt_root / "ui/screens/ChatScreens.kt").read_text(encoding="utf-8")
+if "GROUP_MAX_MEMBERS - 1" not in chat_txt or 'trf("group_full"' not in chat_txt:
+    problems.append("ChatScreens.kt: New group must stop at 49 other people and Group info must show the 'group is full' message")
+
 for w in warnings:
     print("warning:", w)
 for p in problems:

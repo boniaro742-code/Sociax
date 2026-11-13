@@ -210,7 +210,7 @@ fun HomeScreen(
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 SociaxMark(Modifier.weight(1f))
                 Box(
-                    Modifier.size(44.dp).clip(CircleShape).background(AccentBrush).clickable(onClick = onCreate),
+                    Modifier.size(44.dp).tourTarget("create").clip(CircleShape).background(AccentBrush).clickable(onClick = onCreate),
                     contentAlignment = Alignment.Center
                 ) { Icon(Icons.Filled.Add, tr("a11y_new_post"), tint = OnAccent, modifier = Modifier.size(24.dp)) }
                 Spacer(Modifier.width(10.dp))

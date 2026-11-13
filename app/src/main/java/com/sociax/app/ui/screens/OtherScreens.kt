@@ -26,6 +26,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sociax.app.ui.theme.*
@@ -110,6 +112,22 @@ private fun Stat(v: String, l: String, modifier: Modifier = Modifier) = Column(m
 }
 
 // ---------------- SETTINGS ----------------
+// Step 86 (plan v5.0.0 section 8): the Settings landing shows EXACTLY TEN top-level category buttons; each opens its own detail screen that holds the
+// related controls (everything that existed before is still here, only moved; no saved preference is touched).
+/** The ten categories in plan order: id (also the value kept by MainActivity), label key, icon. */
+internal val SETTINGS_CATEGORIES: List<Triple<String, String, androidx.compose.ui.graphics.vector.ImageVector>> = listOf(
+    Triple("account", "cat_account", Icons.Filled.Person),
+    Triple("privacy", "cat_privacy", Icons.Filled.Lock),
+    Triple("appearance", "cat_appearance", Icons.Filled.Palette),
+    Triple("language", "cat_language", Icons.Filled.Language),
+    Triple("notifications", "cat_notifications", Icons.Filled.Notifications),
+    Triple("content", "cat_content", Icons.Filled.VideoLibrary),
+    Triple("chat", "cat_chat", Icons.Filled.Forum),
+    Triple("ai", "cat_ai", Icons.Filled.AutoAwesome),
+    Triple("data", "cat_data", Icons.Filled.CloudSync),
+    Triple("help", "cat_help", Icons.Filled.Info)
+)
+
 @Composable
 fun SettingsScreen(
     mode: ThemeMode, onMode: (ThemeMode) -> Unit,
@@ -120,61 +138,99 @@ fun SettingsScreen(
     onBack: () -> Unit, onLogout: () -> Unit = {}, api: com.sociax.app.data.ApiClient? = null,
     me: com.sociax.app.data.Me? = null, onMeChanged: (com.sociax.app.data.Me) -> Unit = {},
     onEditProfile: () -> Unit = {}, onBlocked: () -> Unit = {}, onSaved: () -> Unit = {}, onSavedShorts: () -> Unit = {}, onDeleted: () -> Unit = {},
-    lock: com.sociax.app.data.AppLock? = null, onChangeLock: () -> Unit = {}
+    lock: com.sociax.app.data.AppLock? = null, onChangeLock: () -> Unit = {}, onReplayTour: () -> Unit = {},
+    category: String = "", onCategory: (String) -> Unit = {}       // "" = the landing with the ten buttons; kept by MainActivity so Back from a sub-list returns to the same category
 ) {
+    val current = SETTINGS_CATEGORIES.firstOrNull { it.first == category }
     Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()).padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), onBack); Spacer(Modifier.width(12.dp))
-            Text(tr("settings"), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            GlassIconButton(Icons.Filled.ArrowBack, tr("a11y_back"), { if (current != null) onCategory("") else onBack() }); Spacer(Modifier.width(12.dp))
+            Text(tr(current?.second ?: "settings"), color = Ink, fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.semantics { heading() })
         }
-        Section(tr("appearance")) {
-            OptionRow(tr("mode_dark"), mode == ThemeMode.DARK) { onMode(ThemeMode.DARK) }
-            OptionRow(tr("mode_light"), mode == ThemeMode.LIGHT) { onMode(ThemeMode.LIGHT) }
-            OptionRow(tr("mode_system"), mode == ThemeMode.SYSTEM) { onMode(ThemeMode.SYSTEM) }
-            Text(tr("accent"), color = Ink, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                AccentChoices.forEach { c ->
-                    Box(
-                        Modifier.size(38.dp).clip(CircleShape).background(Color(c))
-                            .border(if (c == accent) 3.dp else 1.dp, if (c == accent) Ink else GlassBorder, CircleShape)
-                            .clickable { onAccent(c) },
-                        contentAlignment = Alignment.Center
-                    ) { if (c == accent) Icon(Icons.Filled.Check, null, tint = OnAccent, modifier = Modifier.size(20.dp)) }
+        when (current?.first) {
+            null -> {
+                Spacer(Modifier.height(14.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SETTINGS_CATEGORIES.forEach { (id, key, icon) -> SettingsCategoryButton(icon, tr(key)) { onCategory(id) } }
                 }
             }
-            Text(tr("text_size"), color = Ink, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PillButton(tr("size_small"), { onTextSize(TextSize.SMALL) }, filled = textSize == TextSize.SMALL)
-                PillButton(tr("size_normal"), { onTextSize(TextSize.NORMAL) }, filled = textSize == TextSize.NORMAL)
-                PillButton(tr("size_large"), { onTextSize(TextSize.LARGE) }, filled = textSize == TextSize.LARGE)
+            "account" -> Section(tr("account")) {
+                if (me != null) NavRow(tr("edit_profile"), onEditProfile)
+                GoogleAccountRow()
+                PillButton(tr("logout"), onLogout)
+                Text(tr("logout_note"), color = Ink.copy(.6f), fontSize = 12.sp)   // Step 54: log out only ends the session
+                DeleteAccountRow(api, onDeleted)
             }
-            SwitchRow(tr("reduce_motion"), tr("reduce_motion_sub"), reduceMotion, onReduceMotion)
-        }
-        Section(tr("language")) {
-            Lang.values().forEach { l -> OptionRow(l.label, l == lang) { onLang(l) } }
-        }
-        PlansSection(api)
-        AiSettingsSection(api)                                    // Step 42
-        if (lock != null) AppLockSection(lock, onChangeLock)      // Step 32
-        DailyAlarmSection()                                       // Step 33
-        PrivacySection(me, api, onMeChanged, onBlocked, onSaved, onSavedShorts)
-        ChatSettingsSection(me, api, onMeChanged)                 // Step 43
-        NotificationsSection(me, api, onMeChanged)
-        ShortVideoSettings()
-        PersonalizationSection(api)                               // Step 40
-        DataSettingsSection()                                     // Step 44
-        Section(tr("account")) {
-            if (me != null) NavRow(tr("edit_profile"), onEditProfile)
-            GoogleAccountRow()
-            PillButton(tr("logout"), onLogout)
-            Text(tr("logout_note"), color = Ink.copy(.6f), fontSize = 12.sp)   // Step 54: log out only ends the session
-            DeleteAccountRow(api, onDeleted)
-        }
-        HelpLegalSection(api)
-        Section(tr("about")) {
-            Text("Sociax  •  " + tr("version") + " " + com.sociax.app.BuildConfig.VERSION_NAME, color = Ink.copy(.8f))
+            "privacy" -> {
+                PrivacySection(me, api, onMeChanged, onBlocked, onSaved, onSavedShorts)
+                if (lock != null) AppLockSection(lock, onChangeLock)      // Step 32
+            }
+            "appearance" -> Section(tr("appearance")) {
+                OptionRow(tr("mode_dark"), mode == ThemeMode.DARK) { onMode(ThemeMode.DARK) }
+                OptionRow(tr("mode_light"), mode == ThemeMode.LIGHT) { onMode(ThemeMode.LIGHT) }
+                OptionRow(tr("mode_system"), mode == ThemeMode.SYSTEM) { onMode(ThemeMode.SYSTEM) }
+                Text(tr("accent"), color = Ink, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    AccentChoices.forEach { c ->
+                        Box(
+                            Modifier.size(38.dp).clip(CircleShape).background(Color(c))
+                                .border(if (c == accent) 3.dp else 1.dp, if (c == accent) Ink else GlassBorder, CircleShape)
+                                .clickable { onAccent(c) },
+                            contentAlignment = Alignment.Center
+                        ) { if (c == accent) Icon(Icons.Filled.Check, null, tint = OnAccent, modifier = Modifier.size(20.dp)) }
+                    }
+                }
+                Text(tr("text_size"), color = Ink, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PillButton(tr("size_small"), { onTextSize(TextSize.SMALL) }, filled = textSize == TextSize.SMALL)
+                    PillButton(tr("size_normal"), { onTextSize(TextSize.NORMAL) }, filled = textSize == TextSize.NORMAL)
+                    PillButton(tr("size_large"), { onTextSize(TextSize.LARGE) }, filled = textSize == TextSize.LARGE)
+                }
+                SwitchRow(tr("reduce_motion"), tr("reduce_motion_sub"), reduceMotion, onReduceMotion)
+            }
+            "language" -> Section(tr("language")) {
+                Lang.values().forEach { l -> OptionRow(l.label, l == lang) { onLang(l) } }
+            }
+            "notifications" -> {
+                NotificationsSection(me, api, onMeChanged)
+                DailyAlarmSection()                                       // Step 33
+            }
+            "content" -> {
+                ShortVideoSettings()
+                PersonalizationSection(api)                               // Step 40
+            }
+            "chat" -> ChatSettingsSection(me, api, onMeChanged)           // Step 43
+            "ai" -> {
+                PlansSection(api)
+                AiSettingsSection(api)                                    // Step 42
+            }
+            "data" -> DataSettingsSection()                               // Step 44
+            "help" -> {
+                HelpLegalSection(api, onReplayTour)                       // includes "Replay app tour" (Step 85)
+                Section(tr("about")) {
+                    Text("Sociax  \u2022  " + tr("version") + " " + com.sociax.app.BuildConfig.VERSION_NAME, color = Ink.copy(.8f))
+                }
+            }
         }
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+/** One of the ten category buttons: icon, name, arrow. At least 56 dp tall (the Android minimum touch size is 48 dp); TalkBack reads it as a button. */
+@Composable
+private fun SettingsCategoryButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(RoundedCornerShape(16.dp)).background(CardFill)
+            .border(1.dp, GlassBorder, RoundedCornerShape(16.dp))
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(36.dp).clip(CircleShape).background(SoftAccent), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = Accent, modifier = Modifier.size(20.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(label, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Icon(Icons.Filled.ChevronRight, null, tint = Ink.copy(.6f))
     }
 }
 

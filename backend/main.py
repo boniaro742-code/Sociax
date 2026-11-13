@@ -215,6 +215,9 @@ def init_db():
             con.execute("ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT ''")
         if "read_receipts" not in cols:       # Step 43 (plan section 9: Chat > read receipts): 1 = I show "Seen" AND may see other people's
             con.execute("ALTER TABLE users ADD COLUMN read_receipts INTEGER NOT NULL DEFAULT 1")
+        if "tour_done" not in cols:           # Step 85 (plan v5.0.0 section 7): 1 = the first-time app tour is finished / skipped. Accounts that
+            # already exist get 1 (DEFAULT 1): the tour is for NEW accounts only. A new account is inserted with 0 (see onboard()).
+            con.execute("ALTER TABLE users ADD COLUMN tour_done INTEGER NOT NULL DEFAULT 1")
         mcols = {r["name"] for r in con.execute("PRAGMA table_info(messages)")}
         if mcols and "held" not in mcols:     # Step 22: 1 = waiting until the sender follows the recipient
             con.execute("ALTER TABLE messages ADD COLUMN held INTEGER NOT NULL DEFAULT 0")
@@ -559,6 +562,7 @@ def profile_dict(row) -> dict:
         "who_can_message": row["who_can_message"], "default_audience": row["default_audience"],
         "follow_first": bool(row["follow_first"]), "show_last_seen": bool(row["show_last_seen"]),
         "read_receipts": bool(row["read_receipts"]),      # Step 43
+        "tour_done": bool(row["tour_done"]),              # Step 85: false only for a brand-new account that has not finished / skipped the tour
         "notifications": notif_prefs(row),
         "language": row["language"] or None,       # Step 37: None = never saved on the account
         "followers": followers, "following": following, "posts": posts,
@@ -584,6 +588,7 @@ class ProfileUpdate(BaseModel):
     read_receipts: bool | None = None                  # Step 43: show "Seen" in one-to-one chats (and see other people's)
     notifications: dict[str, bool] | None = None      # Step 27: {"follows": false, ...} (only the groups given change)
     language: Literal["en", "fr", "zh", "ko", "ru"] | None = None   # Step 37: the app language is kept on the account too
+    tour_done: Literal[True] | None = None            # Step 85: the first-time tour is finished or skipped (it can only be set to true, never back)
 
 
 @app.patch("/users/me")
@@ -626,6 +631,8 @@ def update_me(body: ProfileUpdate, uid: str = Depends(current_user)):
                         (",".join(c for c in NOTIF_CATEGORIES if c in off), uid))
         if body.language is not None:
             con.execute("UPDATE users SET language=? WHERE uid=?", (body.language, uid))
+        if body.tour_done:                       # Step 85: saved on the account, so the tour never repeats after logout / login / a new phone
+            con.execute("UPDATE users SET tour_done=1 WHERE uid=?", (uid,))
         if body.read_receipts is not None:       # Step 43: switched off -> nothing stays recorded for the other side
             con.execute("UPDATE users SET read_receipts=? WHERE uid=?", (int(body.read_receipts), uid))
             if not body.read_receipts:
@@ -1152,7 +1159,7 @@ def onboard(body: Onboarding, uid: str = Depends(current_user)):
             raise HTTPException(409, "Already onboarded")
         try:
             con.execute(
-                "INSERT INTO users(uid, username, display_name, age, source, created_at, language) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO users(uid, username, display_name, age, source, created_at, language, tour_done) VALUES (?,?,?,?,?,?,?,0)",
                 (uid, username, body.display_name.strip(), body.age, source, int(time.time()),
                  body.language if body.language in LANGUAGES else ""),
             )
@@ -2668,7 +2675,7 @@ def feed_for_you(cursor: str | None = None, limit: int = 20, uid: str = Depends(
 # - Message text is never written to logs.
 # =====================================================================
 MAX_MESSAGE_CHARS = 2000
-GROUP_MAX_MEMBERS = 100          # technical safety cap; the plan has not decided a group size limit
+GROUP_MAX_MEMBERS = 50           # Step 87 (plan v5.0.0 section 9): 50 TOTAL members, the creator / admins INCLUDED (not 50 plus the creator)
 AI_MENTION = re.compile(r"(?<![\w@])@ai\b", re.IGNORECASE)
 
 
@@ -2941,8 +2948,8 @@ def create_group(body: NewGroup, uid: str = Depends(current_user)):
             if not can_contact(con, uid, t):
                 raise HTTPException(403, f"@{t['username']} can't be added to your group")
             seen.add(t["uid"]); targets.append(t)
-        if len(targets) + 1 > GROUP_MAX_MEMBERS:
-            raise HTTPException(422, f"A group can have at most {GROUP_MAX_MEMBERS} members")
+        if len(targets) + 1 > GROUP_MAX_MEMBERS:          # + 1 = the creator: the 51st person is refused, whatever the phone sends
+            raise HTTPException(422, f"A group can have at most {GROUP_MAX_MEMBERS} members, including you")
         now = int(time.time())
         cur = con.execute("INSERT INTO conversations(kind, name, owner, created_at) VALUES ('group',?,?,?)",
                           (name, uid, now))
@@ -2976,6 +2983,7 @@ def group_info(group_id: int, uid: str = Depends(current_user)):
                ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.username""",
             (group_id,)).fetchall()
     return {"id": c["id"], "name": c["name"], "ai_enabled": bool(c["ai_enabled"]), "my_role": role,
+            "max_members": GROUP_MAX_MEMBERS, "member_count": len(rows), "full": len(rows) >= GROUP_MAX_MEMBERS,      # Step 87
             "members": [{"username": "@" + r["username"], "display_name": r["display_name"],
                          "avatar_url": avatar_url(r["avatar_public_id"]), "role": r["role"]} for r in rows]}
 
@@ -2992,13 +3000,16 @@ def add_member(group_id: int, body: MemberAdd, uid: str = Depends(current_user))
         if role not in ("owner", "admin"):
             raise HTTPException(403, "Only the group owner or an admin can add members")
         t = user_by_name(con, body.username)
-        if con.execute("SELECT 1 FROM conv_members WHERE conv_id=? AND uid=?", (group_id, t["uid"])).fetchone():
-            raise HTTPException(409, "Already in the group")
         if not can_contact(con, uid, t):
             raise HTTPException(403, f"@{t['username']} can't be added to your group")
+        # Step 87: from here ONE writer at a time. Two admins adding at the same moment cannot both take the last place: the second one
+        # waits here, then counts again and finds the group full. The duplicate check is repeated inside the lock for the same reason.
+        con.execute("BEGIN IMMEDIATE")
+        if con.execute("SELECT 1 FROM conv_members WHERE conv_id=? AND uid=?", (group_id, t["uid"])).fetchone():
+            raise HTTPException(409, "Already in the group")
         n = con.execute("SELECT COUNT(*) FROM conv_members WHERE conv_id=?", (group_id,)).fetchone()[0]
         if n + 1 > GROUP_MAX_MEMBERS:
-            raise HTTPException(422, f"A group can have at most {GROUP_MAX_MEMBERS} members")
+            raise HTTPException(422, f"This group is full ({GROUP_MAX_MEMBERS} members)")
         con.execute("INSERT INTO conv_members(conv_id, uid, role, joined_at) VALUES (?,?,'member',?)",
                     (group_id, t["uid"], int(time.time())))
         me = user_row(con, uid)
@@ -3704,6 +3715,11 @@ def ads_status(uid: str = Depends(current_user)):
     out = _ad_status_dict(uid, used, pro)
     # Under 18: the phone requests NO ad at all (age is the one given at sign-up).
     out["minor"] = bool(age and age["age"] < 18)
+    # v0.85.2 (report v0.85.0): tell WHY no ad is requested. "eligible" keeps its meaning (Free + cap not reached); the phone blocks minors itself.
+    if out["minor"] and out["reason"] is None:
+        out["reason"] = "minor"
+    # One short line in the server log (no user id, no personal data) so "GET /ads/status 200, eligible=True" can be checked on Render.
+    logging.getLogger("sociax").info("ads/status: eligible=%s reason=%s minor=%s used=%s/%s", out["eligible"], out["reason"], out["minor"], used, AD_DAILY_CAP)
     return out
 
 
